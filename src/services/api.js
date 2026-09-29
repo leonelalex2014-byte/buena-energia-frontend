@@ -8,6 +8,16 @@ const api = axios.create({
   timeout: 10000,
 })
 
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('auth_token')
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+
+  return config
+})
+
 export const getProducts = async () => {
   try {
     const { data } = await api.get('/productos')
@@ -28,4 +38,21 @@ export const getProducts = async () => {
 
     throw new Error('No pudimos conectar con el backend. Revisa la URL y que el servidor esté disponible.')
   }
+}
+
+export const loginAdministrator = async (credentials) => {
+  const { data } = await api.post('/admin/login', credentials)
+  return data
+}
+
+export const registerAdministrator = async (details) => {
+  const { data } = await api.post('/admin/register', details)
+  return data
+}
+
+export const logoutAdministrator = () => api.post('/admin/logout')
+
+export const createProduct = async (product) => {
+  const { data } = await api.post('/admin/productos', product)
+  return data
 }
