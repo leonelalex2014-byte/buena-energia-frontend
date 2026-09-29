@@ -53,6 +53,22 @@ export const registerAdministrator = async (details) => {
 export const logoutAdministrator = () => api.post('/admin/logout')
 
 export const createProduct = async (product) => {
-  const { data } = await api.post('/admin/productos', product)
+  const formData = new FormData()
+
+  for (const field of ['nombre', 'precio', 'categoria']) {
+    formData.append(field, product[field])
+  }
+
+  if (product.descripcion) formData.append('descripcion', product.descripcion)
+  if (product.imagen) formData.append('imagen', product.imagen)
+  if (product.imagen_archivo) formData.append('imagen_archivo', product.imagen_archivo)
+
+  product.variantes.forEach((variant, index) => {
+    formData.append(`variantes[${index}][talle]`, variant.talle)
+    formData.append(`variantes[${index}][color]`, variant.color)
+    formData.append(`variantes[${index}][stock]`, variant.stock)
+  })
+
+  const { data } = await api.post('/admin/productos', formData)
   return data
 }

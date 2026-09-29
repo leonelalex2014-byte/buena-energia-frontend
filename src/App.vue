@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   createProduct,
   getProducts,
@@ -33,6 +33,9 @@ const isAdminPanelOpen = ref(false)
 const productLoading = ref(false)
 const productError = ref('')
 const productSuccess = ref('')
+const productImageFile = ref(null)
+const productImagePreview = ref('')
+const productImageInput = ref(null)
 
 const authForm = ref({
   nombre: '',
@@ -81,12 +84,21 @@ const whatsappConfigured = computed(() => whatsappNumber.length >= 10)
 const detailVariant = computed(() => selectedProduct.value?.variantes?.find(
   (variant) => variant.id_variante === detailVariantId.value,
 ))
+const detailImage = computed(() => selectedProduct.value
+  ? imageForVariant(selectedProduct.value, detailVariantId.value)
+  : fallbackImage)
 
 const formatPrice = (price) => new Intl.NumberFormat('es-MX', {
   style: 'currency',
   currency: 'MXN',
   maximumFractionDigits: 0,
 }).format(Number(price) || 0)
+
+const imageForVariant = (product, variantId) => {
+  const variant = product.variantes?.find((item) => item.id_variante === variantId)
+  const color = product.colors?.find((item) => item.name?.toLocaleLowerCase('es') === variant?.color?.toLocaleLowerCase('es'))
+  return color?.image || product.imagen_url || fallbackImage
+}
 
 const loadCatalog = async () => {
   isLoading.value = true
@@ -297,6 +309,37 @@ const removeVariant = (index) => {
   }
 }
 
+const clearProductImage = () => {
+  if (productImagePreview.value) URL.revokeObjectURL(productImagePreview.value)
+  productImageFile.value = null
+  productImagePreview.value = ''
+  if (productImageInput.value) productImageInput.value.value = ''
+}
+
+const handleProductImageSelection = (event) => {
+  productError.value = ''
+  const file = event.target.files?.[0]
+
+  if (!file) return
+
+  const acceptedTypes = ['image/jpeg', 'image/png', 'image/webp']
+  if (!acceptedTypes.includes(file.type)) {
+    clearProductImage()
+    productError.value = 'Selecciona una imagen JPG, PNG o WebP.'
+    return
+  }
+
+  if (file.size > 5 * 1024 * 1024) {
+    clearProductImage()
+    productError.value = 'La imagen debe pesar máximo 5 MB.'
+    return
+  }
+
+  if (productImagePreview.value) URL.revokeObjectURL(productImagePreview.value)
+  productImageFile.value = file
+  productImagePreview.value = URL.createObjectURL(file)
+}
+
 const submitProduct = async () => {
   productLoading.value = true
   productError.value = ''
@@ -308,6 +351,7 @@ const submitProduct = async () => {
       precio: Number(productForm.value.precio),
       descripcion: productForm.value.descripcion || null,
       imagen: productForm.value.imagen || null,
+      imagen_archivo: productImageFile.value,
       variantes: productForm.value.variantes.map((variant) => ({
         talle: variant.talle,
         color: variant.color,
@@ -316,6 +360,7 @@ const submitProduct = async () => {
     })
 
     productForm.value = emptyProductForm()
+    clearProductImage()
     productSuccess.value = 'Producto creado y añadido al catálogo.'
     await loadCatalog()
   } catch (error) {
@@ -341,6 +386,8 @@ onMounted(() => {
 
   loadCatalog()
 })
+
+onUnmounted(clearProductImage)
 </script>
 
 <template>
@@ -406,8 +453,20 @@ onMounted(() => {
               <input v-model="productForm.precio" type="number" min="0.01" max="99999999.99" step="0.01" required />
             </label>
             <label class="admin-field">
-              <span>Imagen (URL o ruta)</span>
-              <input v-model.trim="productForm.imagen" type="text" maxlength="255" placeholder="https://... o /images/prenda.jpg" />
+              <span>Imagen del producto</span>
+              <input
+                ref="productImageInput"
+                class="image-file-input"
+                type="file"
+                accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                @change="handleProductImageSelection"
+              />
+              <span class="image-upload-hint">JPG, PNG o WebP · máximo 5 MB</span>
+              <div v-if="productImagePreview" class="image-preview-row">
+                <img :src="productImagePreview" alt="Vista previa de la imagen seleccionada" class="image-preview" />
+                <button class="admin-secondary" type="button" @click="clearProductImage">Quitar imagen</button>
+              </div>
+              <input v-model.trim="productForm.imagen" type="url" maxlength="255" placeholder="O pega una URL de imagen" />
             </label>
             <label class="admin-field admin-field-wide">
               <span>Descripción</span>
@@ -504,7 +563,7 @@ onMounted(() => {
             <div class="product-image-wrap">
               <button class="product-image-trigger" type="button" :aria-label="`Ver detalles de ${product.nombre}`" @click="openProductDetails(product)">
                 <img
-                  :src="product.imagen_url || fallbackImage"
+                  :src="imageForVariant(product, selectedVariantIds[product.id_producto])"
                   :alt="product.nombre"
                   class="product-image"
                   loading="lazy"
@@ -571,7 +630,7 @@ onMounted(() => {
           <div class="product-detail-layout">
             <div class="product-detail-image-wrap">
               <img
-                :src="selectedProduct.imagen_url || fallbackImage"
+                :src="detailImage"
                 :alt="selectedProduct.nombre"
                 @error="handleImageError"
               />
