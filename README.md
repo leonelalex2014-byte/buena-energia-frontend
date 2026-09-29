@@ -19,6 +19,17 @@ La bolsa es local. Al continuar, el frontend abre WhatsApp con un mensaje listo 
 
 - Node.js 22.18 o superior
 - Backend Laravel en ejecución y con CORS habilitado para el origen del frontend
+- Git para clonar ambos repositorios
+
+## Clonar ambos repositorios
+
+Desde PowerShell, ejecuta el script y elige la carpeta donde guardar los repositorios:
+
+```powershell
+.\scripts\clone-buena-energia.ps1 -Destination "C:\Proyectos\Buena-Energia"
+```
+
+El script clona el frontend y el backend públicos. Si ya están clonados en esa carpeta con el `origin` correcto, los conserva sin sobrescribir cambios locales. Puedes revisar lo que haría sin clonar con `-WhatIf`.
 
 ## Desarrollo
 
