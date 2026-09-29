@@ -11,8 +11,9 @@ Tienda online de Buena Energía, desarrollada con Vue 3 y Vite e integrada con e
 - Formato de precios en pesos mexicanos.
 - Acceso de administrador con registro protegido por clave y sesión Sanctum.
 - Alta de productos con variantes de talle/color y stock.
+- Pedidos por WhatsApp con datos del cliente, variantes, subtotal y retiro o entrega a domicilio.
 
-El checkout está deshabilitado hasta que el backend tenga un endpoint de pedidos. La bolsa es local y no reserva inventario ni crea pedidos.
+La bolsa es local. Al continuar, el frontend abre WhatsApp con un mensaje listo para la dueña; no reserva inventario ni registra el pedido en la base de datos. La tienda confirma existencias y el costo de envío en esa conversación.
 
 ## Requisitos
 
@@ -31,7 +32,10 @@ Configura `VITE_API_BASE_URL` en `.env`. Para el backend local:
 
 ```env
 VITE_API_BASE_URL=http://127.0.0.1:8000/api
+VITE_WHATSAPP_NUMBER=
 ```
+
+Configura `VITE_WHATSAPP_NUMBER` con el número de la tienda en formato internacional, solo dígitos, sin `+`, espacios ni guiones. Reinicia Vite después de editar `.env`.
 
 Para cambiar esta variable, reinicia el servidor de Vite.
 
@@ -41,7 +45,7 @@ El catálogo consume `GET /api/productos`. Cada producto incluye `id_producto`, 
 
 El catálogo incluye los identificadores y el stock de cada variante. El alta usa `POST /api/admin/productos`; la sesión requiere `POST /api/admin/login` y el registro `POST /api/admin/register`.
 
-El registro de administradores requiere configurar `ADMIN_REGISTRATION_KEY` en el `.env` del backend. Nunca incluyas esa clave en el frontend. Los pedidos siguen deshabilitados hasta que el backend publique un endpoint de compra; no se usa `GET /api/test-pedido`, porque esa ruta de prueba modifica el inventario.
+El registro de administradores requiere configurar `ADMIN_REGISTRATION_KEY` en el `.env` del backend. Nunca incluyas esa clave en el frontend. El mensaje de WhatsApp incluye las prendas, talle, color, cantidades, subtotal y forma de entrega. El costo de envío se confirma con la tienda; no se usa `GET /api/test-pedido`, porque esa ruta de prueba modifica el inventario.
 
 ## Producción
 

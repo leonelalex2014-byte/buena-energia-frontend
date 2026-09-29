@@ -15,6 +15,15 @@ const searchQuery = ref('')
 const isCartOpen = ref(false)
 const isLoading = ref(true)
 const loadError = ref('')
+const selectedVariantIds = ref({})
+const selectedProduct = ref(null)
+const detailVariantId = ref(null)
+const cartNotice = ref('')
+const isCheckoutOpen = ref(false)
+const checkoutError = ref('')
+const deliveryMethod = ref('retiro')
+const customer = ref({ nombre: '', telefono: '', direccion: '', notas: '' })
+const whatsappNumber = (import.meta.env.VITE_WHATSAPP_NUMBER || '').replace(/\D/g, '')
 const currentUser = ref(readStoredUser())
 const isAuthOpen = ref(false)
 const authMode = ref('login')
@@ -68,6 +77,10 @@ const filteredProducts = computed(() => {
 
 const cartCount = computed(() => cartItems.value.reduce((total, item) => total + item.quantity, 0))
 const cartTotal = computed(() => cartItems.value.reduce((total, item) => total + item.precio * item.quantity, 0))
+const whatsappConfigured = computed(() => whatsappNumber.length >= 10)
+const detailVariant = computed(() => selectedProduct.value?.variantes?.find(
+  (variant) => variant.id_variante === detailVariantId.value,
+))
 
 const formatPrice = (price) => new Intl.NumberFormat('es-MX', {
   style: 'currency',
@@ -81,6 +94,19 @@ const loadCatalog = async () => {
 
   try {
     products.value = await getProducts()
+    const selections = { ...selectedVariantIds.value }
+
+    for (const product of products.value) {
+      const variants = product.variantes || []
+      const currentVariant = variants.find((variant) => variant.id_variante === selections[product.id_producto])
+
+      if (!currentVariant || Number(currentVariant.stock) < 1) {
+        const availableVariant = variants.find((variant) => Number(variant.stock) > 0)
+        if (availableVariant) selections[product.id_producto] = availableVariant.id_variante
+      }
+    }
+
+    selectedVariantIds.value = selections
   } catch (error) {
     loadError.value = error.message || 'No fue posible cargar el catálogo.'
   } finally {
@@ -93,36 +119,124 @@ const saveCart = () => {
 }
 
 const addToCart = (product) => {
-  const existingItem = cartItems.value.find((item) => item.id_producto === product.id_producto)
+  const variant = product.variantes?.find((item) => item.id_variante === selectedVariantIds.value[product.id_producto])
+
+  if (!variant || Number(variant.stock) < 1) {
+    cartNotice.value = 'Esta prenda no tiene variantes disponibles.'
+    return false
+  }
+
+  const existingItem = cartItems.value.find((item) => item.id_variante === variant.id_variante)
 
   if (existingItem) {
+    if (existingItem.quantity >= Number(variant.stock)) {
+      cartNotice.value = `Solo hay ${variant.stock} unidades disponibles para esa variante.`
+      return false
+    }
     existingItem.quantity += 1
   } else {
     cartItems.value.push({
       id_producto: product.id_producto,
+      id_variante: variant.id_variante,
       nombre: product.nombre,
+      talle: variant.talle,
+      color: variant.color,
+      stock: Number(variant.stock),
       precio: Number(product.precio) || 0,
       imagen_url: product.imagen_url || fallbackImage,
       quantity: 1,
     })
   }
 
+  cartNotice.value = ''
   saveCart()
+  return true
+}
+
+const openProductDetails = (product) => {
+  selectedProduct.value = product
+  const selectedId = selectedVariantIds.value[product.id_producto]
+  const selectedVariant = product.variantes?.find((variant) => variant.id_variante === selectedId && Number(variant.stock) > 0)
+  const firstAvailableVariant = product.variantes?.find((variant) => Number(variant.stock) > 0)
+  detailVariantId.value = (selectedVariant || firstAvailableVariant || product.variantes?.[0])?.id_variante || null
+}
+
+const addDetailToCart = () => {
+  if (!selectedProduct.value || !detailVariantId.value) return
+
+  selectedVariantIds.value = {
+    ...selectedVariantIds.value,
+    [selectedProduct.value.id_producto]: detailVariantId.value,
+  }
+
+  if (addToCart(selectedProduct.value)) {
+    selectedProduct.value = null
+    isCartOpen.value = true
+  }
 }
 
 const updateQuantity = (item, change) => {
+  if (change > 0 && item.quantity >= item.stock) {
+    cartNotice.value = `Solo hay ${item.stock} unidades disponibles de ${item.nombre} (${item.talle}, ${item.color}).`
+    return
+  }
+
   item.quantity += change
 
   if (item.quantity <= 0) {
-    cartItems.value = cartItems.value.filter((cartItem) => cartItem.id_producto !== item.id_producto)
+    cartItems.value = cartItems.value.filter((cartItem) => cartItem.id_variante !== item.id_variante)
   }
 
+  cartNotice.value = ''
   saveCart()
 }
 
-const removeFromCart = (productId) => {
-  cartItems.value = cartItems.value.filter((item) => item.id_producto !== productId)
+const removeFromCart = (variantId) => {
+  cartItems.value = cartItems.value.filter((item) => item.id_variante !== variantId)
+  cartNotice.value = ''
   saveCart()
+}
+
+const openCheckout = () => {
+  checkoutError.value = ''
+  isCheckoutOpen.value = true
+}
+
+const submitOrder = () => {
+  checkoutError.value = ''
+
+  if (!whatsappConfigured.value) {
+    checkoutError.value = 'Falta configurar el WhatsApp de la tienda.'
+    return
+  }
+
+  const itemLines = cartItems.value.map((item, index) => {
+    const lineTotal = item.precio * item.quantity
+    return `${index + 1}. ${item.nombre} | Talle: ${item.talle} | Color: ${item.color} | Cantidad: ${item.quantity} | ${formatPrice(lineTotal)}`
+  })
+
+  const deliveryText = deliveryMethod.value === 'retiro'
+    ? 'Retiro en el local'
+    : `Entrega a domicilio\nDirección: ${customer.value.direccion.trim()}\nEnvío: por confirmar con la tienda`
+
+  const message = [
+    '*NUEVO PEDIDO · BUENA ENERGÍA*',
+    '',
+    `Cliente: ${customer.value.nombre.trim()}`,
+    `Teléfono: ${customer.value.telefono.trim()}`,
+    `Entrega: ${deliveryText}`,
+    '',
+    '*PRODUCTOS*',
+    ...itemLines,
+    '',
+    `*Subtotal: ${formatPrice(cartTotal.value)}*`,
+    ...(customer.value.notas.trim() ? ['', `Notas: ${customer.value.notas.trim()}`] : []),
+    '',
+    'Por favor confirma disponibilidad y costo de envío.',
+  ].join('\n')
+
+  const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(message)}`
+  window.open(whatsappUrl, '_blank', 'noopener,noreferrer')
 }
 
 const handleImageError = (event) => {
@@ -217,7 +331,10 @@ const submitProduct = async () => {
 onMounted(() => {
   try {
     const savedCart = JSON.parse(localStorage.getItem('buena-energia-cart') || '[]')
-    cartItems.value = Array.isArray(savedCart) ? savedCart : []
+    cartItems.value = Array.isArray(savedCart)
+      ? savedCart.filter((item) => item.id_variante && Number(item.quantity) > 0)
+      : []
+    saveCart()
   } catch {
     cartItems.value = []
   }
@@ -385,21 +502,32 @@ onMounted(() => {
         <div v-else-if="filteredProducts.length" class="product-grid">
           <article v-for="(product, index) in filteredProducts" :key="product.id_producto" class="product-item">
             <div class="product-image-wrap">
-              <img
-                :src="product.imagen_url || fallbackImage"
-                :alt="product.nombre"
-                class="product-image"
-                loading="lazy"
-                @error="handleImageError"
-              />
-              <span class="product-number">0{{ index + 1 }}</span>
-              <button class="quick-add" type="button" :aria-label="`Agregar ${product.nombre} a la bolsa`" @click="addToCart(product)">
+              <button class="product-image-trigger" type="button" :aria-label="`Ver detalles de ${product.nombre}`" @click="openProductDetails(product)">
+                <img
+                  :src="product.imagen_url || fallbackImage"
+                  :alt="product.nombre"
+                  class="product-image"
+                  loading="lazy"
+                  @error="handleImageError"
+                />
+                <span class="product-number">0{{ index + 1 }}</span>
+                <span class="product-view-label">Ver detalles <span aria-hidden="true">↗</span></span>
+              </button>
+              <button class="quick-add" type="button" :aria-label="`Agregar ${product.nombre} a la bolsa`" :disabled="!product.variantes?.some((variant) => Number(variant.stock) > 0)" @click.stop="addToCart(product)">
                 <span aria-hidden="true">+</span>
               </button>
             </div>
+            <label v-if="product.variantes?.length" class="variant-picker">
+              <span>Talle y color</span>
+              <select v-model.number="selectedVariantIds[product.id_producto]" :aria-label="`Variante de ${product.nombre}`">
+                <option v-for="variant in product.variantes" :key="variant.id_variante" :value="variant.id_variante" :disabled="Number(variant.stock) < 1">
+                  {{ variant.talle }} · {{ variant.color }}{{ Number(variant.stock) < 1 ? ' · Agotado' : ` · ${variant.stock} disponibles` }}
+                </option>
+              </select>
+            </label>
             <div class="product-details">
               <div>
-                <h3>{{ product.nombre }}</h3>
+                <h3><button class="product-title-trigger" type="button" @click="openProductDetails(product)">{{ product.nombre }}</button></h3>
                 <p>{{ product.descripcion }}</p>
               </div>
               <span class="product-price">{{ formatPrice(product.precio) }}</span>
@@ -435,6 +563,43 @@ onMounted(() => {
       <span>Prendas para vivir a tu manera.</span>
       <a href="#catalogo">Volver arriba ↑</a>
     </footer>
+
+    <Transition name="auth-modal">
+      <div v-if="selectedProduct" class="auth-layer product-detail-layer" @click.self="selectedProduct = null">
+        <section class="product-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+          <button class="close-cart detail-close" type="button" aria-label="Cerrar detalles" @click="selectedProduct = null">×</button>
+          <div class="product-detail-layout">
+            <div class="product-detail-image-wrap">
+              <img
+                :src="selectedProduct.imagen_url || fallbackImage"
+                :alt="selectedProduct.nombre"
+                @error="handleImageError"
+              />
+            </div>
+            <div class="product-detail-copy">
+              <p class="eyebrow"><span class="eyebrow-line"></span> {{ selectedProduct.categoria || 'BUENA ENERGÍA' }}</p>
+              <h2 id="detail-title">{{ selectedProduct.nombre }}</h2>
+              <p class="product-detail-description">{{ selectedProduct.descripcion || 'Una prenda pensada para acompañarte todos los días.' }}</p>
+              <strong class="product-detail-price">{{ formatPrice(selectedProduct.precio) }}</strong>
+              <label class="detail-variant-picker">
+                <span>Talle y color</span>
+                <select v-model.number="detailVariantId">
+                  <option v-for="variant in selectedProduct.variantes || []" :key="variant.id_variante" :value="variant.id_variante" :disabled="Number(variant.stock) < 1">
+                    {{ variant.talle }} · {{ variant.color }}{{ Number(variant.stock) < 1 ? ' · Agotado' : ` · ${variant.stock} disponibles` }}
+                  </option>
+                </select>
+              </label>
+              <p v-if="detailVariant && Number(detailVariant.stock) > 0" class="detail-stock">Disponible para agregar al carrito</p>
+              <p v-else class="detail-stock detail-out-of-stock">Esta prenda está agotada</p>
+              <p v-if="cartNotice" class="cart-notice" role="status">{{ cartNotice }}</p>
+              <button class="detail-add-button" type="button" :disabled="!detailVariant || Number(detailVariant.stock) < 1" @click="addDetailToCart">
+                Agregar al carrito
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>
+    </Transition>
 
     <Transition name="auth-modal">
       <div v-if="isAuthOpen" class="auth-layer" @click.self="isAuthOpen = false">
@@ -494,21 +659,22 @@ onMounted(() => {
           </div>
 
           <div v-if="cartItems.length" class="cart-items">
-            <article v-for="item in cartItems" :key="item.id_producto" class="cart-item">
+            <article v-for="item in cartItems" :key="item.id_variante" class="cart-item">
               <img :src="item.imagen_url" :alt="item.nombre" @error="handleImageError" />
               <div class="cart-item-copy">
                 <h3>{{ item.nombre }}</h3>
-                <span>{{ formatPrice(item.precio) }}</span>
+                <span>{{ item.talle }} · {{ item.color }} · {{ formatPrice(item.precio) }}</span>
                 <div class="quantity-control" :aria-label="`Cantidad de ${item.nombre}`">
                   <button type="button" :aria-label="`Quitar una unidad de ${item.nombre}`" @click="updateQuantity(item, -1)">−</button>
                   <span>{{ item.quantity }}</span>
                   <button type="button" :aria-label="`Agregar una unidad de ${item.nombre}`" @click="updateQuantity(item, 1)">+</button>
                 </div>
               </div>
-              <button class="remove-item" type="button" :aria-label="`Eliminar ${item.nombre}`" @click="removeFromCart(item.id_producto)">×</button>
+              <button class="remove-item" type="button" :aria-label="`Eliminar ${item.nombre}`" @click="removeFromCart(item.id_variante)">×</button>
             </article>
           </div>
-          <div v-else class="empty-cart">
+          <p v-if="cartNotice" class="cart-notice" role="status">{{ cartNotice }}</p>
+          <div v-if="!cartItems.length" class="empty-cart">
             <span aria-hidden="true">✳</span>
             <p>Tu bolsa está esperando algo bueno.</p>
             <button class="text-button" type="button" @click="isCartOpen = false">Seguir explorando <span aria-hidden="true">↗</span></button>
@@ -516,10 +682,68 @@ onMounted(() => {
 
           <div v-if="cartItems.length" class="cart-footer">
             <div class="cart-subtotal"><span>Subtotal</span><strong>{{ formatPrice(cartTotal) }}</strong></div>
-            <p class="checkout-note">Los pedidos en línea estarán disponibles próximamente.</p>
-            <button class="checkout-button" type="button" disabled>Finalizar pedido</button>
+            <p class="checkout-note">El envío se confirma con la tienda por WhatsApp.</p>
+            <button class="checkout-button" type="button" @click="openCheckout">Continuar por WhatsApp</button>
           </div>
         </aside>
+      </div>
+    </Transition>
+
+    <Transition name="auth-modal">
+      <div v-if="isCheckoutOpen" class="auth-layer checkout-layer" @click.self="isCheckoutOpen = false">
+        <section class="auth-dialog checkout-dialog" role="dialog" aria-modal="true" aria-labelledby="checkout-title">
+          <header class="auth-heading">
+            <div>
+              <p class="eyebrow"><span class="eyebrow-line"></span> CASI LISTO</p>
+              <h2 id="checkout-title">¿Cómo recibes tu pedido?</h2>
+            </div>
+            <button class="close-cart" type="button" aria-label="Cerrar" @click="isCheckoutOpen = false">×</button>
+          </header>
+
+          <form class="auth-form checkout-form" @submit.prevent="submitOrder">
+            <label class="admin-field">
+              <span>Tu nombre *</span>
+              <input v-model.trim="customer.nombre" type="text" maxlength="255" autocomplete="name" required />
+            </label>
+            <label class="admin-field">
+              <span>Teléfono de contacto *</span>
+              <input v-model.trim="customer.telefono" type="tel" maxlength="30" autocomplete="tel" required />
+            </label>
+
+            <fieldset class="delivery-options">
+              <legend>Forma de entrega *</legend>
+              <label class="delivery-option" :class="{ selected: deliveryMethod === 'retiro' }">
+                <input v-model="deliveryMethod" type="radio" value="retiro" />
+                <span><strong>Retiro en el local</strong><small>Coordinamos por WhatsApp</small></span>
+              </label>
+              <label class="delivery-option" :class="{ selected: deliveryMethod === 'domicilio' }">
+                <input v-model="deliveryMethod" type="radio" value="domicilio" />
+                <span><strong>Entrega a domicilio</strong><small>El costo de envío se confirma por WhatsApp</small></span>
+              </label>
+            </fieldset>
+
+            <label v-if="deliveryMethod === 'domicilio'" class="admin-field">
+              <span>Dirección de entrega *</span>
+              <textarea v-model.trim="customer.direccion" rows="2" maxlength="500" autocomplete="street-address" required></textarea>
+            </label>
+            <label class="admin-field">
+              <span>Notas para la tienda</span>
+              <textarea v-model.trim="customer.notas" rows="2" maxlength="500" placeholder="Referencia, horario preferido, etc."></textarea>
+            </label>
+
+            <div class="checkout-summary">
+              <span>{{ cartCount }} {{ cartCount === 1 ? 'prenda' : 'prendas' }} · subtotal</span>
+              <strong>{{ formatPrice(cartTotal) }}</strong>
+            </div>
+            <p v-if="!whatsappConfigured" class="admin-message admin-error" role="alert">
+              Falta configurar VITE_WHATSAPP_NUMBER para activar los pedidos.
+            </p>
+            <p v-if="checkoutError" class="admin-message admin-error" role="alert">{{ checkoutError }}</p>
+            <button class="admin-submit whatsapp-submit" type="submit" :disabled="!whatsappConfigured">
+              Enviar pedido por WhatsApp
+            </button>
+          </form>
+        </section>
       </div>
     </Transition>
   </div>
