@@ -88,9 +88,9 @@ const detailImage = computed(() => selectedProduct.value
   ? imageForVariant(selectedProduct.value, detailVariantId.value)
   : fallbackImage)
 
-const formatPrice = (price) => new Intl.NumberFormat('es-MX', {
+const formatPrice = (price) => new Intl.NumberFormat('es-UY', {
   style: 'currency',
-  currency: 'MXN',
+  currency: 'UYU',
   maximumFractionDigits: 0,
 }).format(Number(price) || 0)
 

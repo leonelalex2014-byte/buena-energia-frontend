@@ -8,7 +8,7 @@ Tienda online de Buena Energía, desarrollada con Vue 3 y Vite e integrada con e
 - Búsqueda de prendas por nombre o descripción.
 - Bolsa de compra con cantidades, subtotal y persistencia en `localStorage`.
 - Diseño adaptable a móvil y escritorio, con estados de carga, error y reintento.
-- Formato de precios en pesos mexicanos.
+- Formato de precios en pesos uruguayos.
 - Acceso de administrador con registro protegido por clave y sesión Sanctum.
 - Alta de productos con imagen desde el equipo, vista previa y variantes de talle/color con stock.
 - Pedidos por WhatsApp con datos del cliente, variantes, subtotal y retiro o entrega a domicilio.
