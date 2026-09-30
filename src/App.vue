@@ -2,10 +2,12 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   createProduct,
+  getCaptchaChallenge,
   getProducts,
   loginAdministrator,
   logoutAdministrator,
   registerAdministrator,
+  verifyCaptcha,
 } from './services/api'
 
 const fallbackImage = 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=1200&q=80'
@@ -21,6 +23,11 @@ const detailVariantId = ref(null)
 const cartNotice = ref('')
 const isCheckoutOpen = ref(false)
 const checkoutError = ref('')
+const captchaChallenge = ref(null)
+const captchaAnswer = ref('')
+const captchaWebsite = ref('')
+const captchaLoading = ref(false)
+const captchaVerifying = ref(false)
 const deliveryMethod = ref('retiro')
 const customer = ref({ nombre: '', telefono: '', direccion: '', notas: '' })
 const whatsappNumber = (import.meta.env.VITE_WHATSAPP_NUMBER || '').replace(/\D/g, '')
@@ -209,17 +216,62 @@ const removeFromCart = (variantId) => {
   saveCart()
 }
 
+const loadCaptchaChallenge = async () => {
+  captchaChallenge.value = null
+  captchaAnswer.value = ''
+  captchaLoading.value = true
+
+  try {
+    captchaChallenge.value = await getCaptchaChallenge()
+  } catch {
+    checkoutError.value = 'No se pudo cargar la verificación. Inténtalo de nuevo.'
+  } finally {
+    captchaLoading.value = false
+  }
+}
+
 const openCheckout = () => {
   checkoutError.value = ''
   isCheckoutOpen.value = true
+  void loadCaptchaChallenge()
 }
 
-const submitOrder = () => {
+const submitOrder = async () => {
   checkoutError.value = ''
 
   if (!whatsappConfigured.value) {
     checkoutError.value = 'Falta configurar el WhatsApp de la tienda.'
     return
+  }
+
+  if (!captchaChallenge.value || captchaLoading.value) {
+    checkoutError.value = 'Espera a que cargue la verificación.'
+    return
+  }
+
+  const whatsappWindow = window.open('', '_blank')
+
+  if (!whatsappWindow) {
+    checkoutError.value = 'Permite las ventanas emergentes para continuar a WhatsApp.'
+    return
+  }
+
+  whatsappWindow.opener = null
+  captchaVerifying.value = true
+
+  try {
+    await verifyCaptcha({
+      challenge_id: captchaChallenge.value.challenge_id,
+      answer: captchaAnswer.value,
+      website: captchaWebsite.value,
+    })
+  } catch (error) {
+    whatsappWindow.close()
+    checkoutError.value = error.response?.data?.message || 'No se pudo validar la verificación.'
+    await loadCaptchaChallenge()
+    return
+  } finally {
+    captchaVerifying.value = false
   }
 
   const itemLines = cartItems.value.map((item, index) => {
@@ -248,7 +300,7 @@ const submitOrder = () => {
   ].join('\n')
 
   const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(message)}`
-  window.open(whatsappUrl, '_blank', 'noopener,noreferrer')
+  whatsappWindow.location.href = whatsappUrl
 }
 
 const handleImageError = (event) => {
@@ -794,12 +846,34 @@ onUnmounted(clearProductImage)
               <span>{{ cartCount }} {{ cartCount === 1 ? 'prenda' : 'prendas' }} · subtotal</span>
               <strong>{{ formatPrice(cartTotal) }}</strong>
             </div>
+            <label v-if="captchaChallenge" class="admin-field">
+              <span>Verificación anti-spam: {{ captchaChallenge.question }} = ?</span>
+              <input
+                v-model="captchaAnswer"
+                type="number"
+                inputmode="numeric"
+                min="2"
+                max="18"
+                step="1"
+                autocomplete="off"
+                required
+              />
+            </label>
+            <p v-else-if="captchaLoading" class="admin-message" role="status">Cargando verificación...</p>
+            <label class="captcha-honeypot" aria-hidden="true">
+              <span>Deja este campo vacío</span>
+              <input v-model="captchaWebsite" type="text" tabindex="-1" autocomplete="off" />
+            </label>
             <p v-if="!whatsappConfigured" class="admin-message admin-error" role="alert">
               Falta configurar VITE_WHATSAPP_NUMBER para activar los pedidos.
             </p>
             <p v-if="checkoutError" class="admin-message admin-error" role="alert">{{ checkoutError }}</p>
-            <button class="admin-submit whatsapp-submit" type="submit" :disabled="!whatsappConfigured">
-              Enviar pedido por WhatsApp
+            <button
+              class="admin-submit whatsapp-submit"
+              type="submit"
+              :disabled="!whatsappConfigured || captchaLoading || captchaVerifying || !captchaChallenge"
+            >
+              {{ captchaVerifying ? 'Verificando...' : 'Enviar pedido por WhatsApp' }}
             </button>
           </form>
         </section>

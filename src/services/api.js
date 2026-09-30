@@ -40,6 +40,13 @@ export const getProducts = async () => {
   }
 }
 
+export const getCaptchaChallenge = async () => {
+  const { data } = await api.get('/captcha/challenge')
+  return data
+}
+
+export const verifyCaptcha = (challenge) => api.post('/captcha/verify', challenge)
+
 export const loginAdministrator = async (credentials) => {
   const { data } = await api.post('/admin/login', credentials)
   return data
