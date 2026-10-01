@@ -413,6 +413,48 @@ input:focus-visible {
   outline: 0;
 }
 
+.category-tabs {
+  display: flex;
+  gap: clamp(22px, 4vw, 48px);
+  margin-top: 28px;
+  overflow-x: auto;
+  border-bottom: 1px solid #d8d9d1;
+  scrollbar-width: thin;
+}
+
+.category-tab {
+  min-height: 42px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #73796e;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .2s ease, border-color .2s ease;
+}
+
+.category-tab[aria-pressed="true"] {
+  border-bottom-color: var(--coral);
+  color: var(--green);
+  font-weight: 700;
+}
+
+.category-tab:focus-visible {
+  outline: 2px solid var(--coral);
+  outline-offset: 3px;
+}
+
+.category-tab-count {
+  color: #92978b;
+  font-size: 10px;
+  font-weight: 400;
+}
+
 .clear-search {
   width: 28px;
   height: 28px;

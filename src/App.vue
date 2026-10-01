@@ -14,6 +14,7 @@ const fallbackImage = 'https://images.unsplash.com/photo-1524504388940-b1c172265
 const products = ref([])
 const cartItems = ref([])
 const searchQuery = ref('')
+const selectedCategory = ref('Todos')
 const isCartOpen = ref(false)
 const isLoading = ref(true)
 const loadError = ref('')
@@ -43,6 +44,42 @@ const productSuccess = ref('')
 const productImageFile = ref(null)
 const productImagePreview = ref('')
 const productImageInput = ref(null)
+
+const setSpanishValidationMessage = (event) => {
+  const field = event.target
+
+  if (!(field instanceof HTMLInputElement || field instanceof HTMLSelectElement || field instanceof HTMLTextAreaElement)) return
+
+  const { validity } = field
+
+  if (validity.valueMissing) {
+    field.setCustomValidity(field.type === 'checkbox' ? 'Marca esta opción para continuar.' : 'Completa este campo.')
+  } else if (validity.typeMismatch && field.type === 'email') {
+    field.setCustomValidity('Ingresa un correo electrónico válido.')
+  } else if (validity.typeMismatch && field.type === 'url') {
+    field.setCustomValidity('Ingresa una URL válida.')
+  } else if (validity.tooShort) {
+    field.setCustomValidity(`Ingresa al menos ${field.minLength} caracteres.`)
+  } else if (validity.tooLong) {
+    field.setCustomValidity(`Usa como máximo ${field.maxLength} caracteres.`)
+  } else if (validity.rangeUnderflow) {
+    field.setCustomValidity(`El valor debe ser como mínimo ${field.min}.`)
+  } else if (validity.rangeOverflow) {
+    field.setCustomValidity(`El valor debe ser como máximo ${field.max}.`)
+  } else if (validity.stepMismatch || validity.badInput) {
+    field.setCustomValidity('Ingresa un valor válido.')
+  } else if (validity.patternMismatch) {
+    field.setCustomValidity('Revisa el formato ingresado.')
+  } else {
+    field.setCustomValidity('Revisa el valor ingresado.')
+  }
+}
+
+const clearSpanishValidationMessage = (event) => {
+  if (typeof event.target?.setCustomValidity === 'function') {
+    event.target.setCustomValidity('')
+  }
+}
 
 const authForm = ref({
   nombre: '',
@@ -74,13 +111,33 @@ function emptyProductForm() {
   }
 }
 
-const filteredProducts = computed(() => {
-  const query = searchQuery.value.trim().toLocaleLowerCase('es')
+const categoryOptions = computed(() => {
+  const categories = [...new Set(products.value.map((product) => product.categoria).filter(Boolean))]
+    .sort((firstCategory, secondCategory) => firstCategory.localeCompare(secondCategory, 'es'))
 
-  if (!query) return products.value
+  return [
+    { name: 'Todos', count: products.value.length },
+    ...categories.map((name) => ({
+      name,
+      count: products.value.filter((product) => product.categoria === name).length,
+    })),
+  ]
+})
+
+const normalizeSearchText = (value) => String(value ?? '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLocaleLowerCase('es')
+
+const filteredProducts = computed(() => {
+  const query = normalizeSearchText(searchQuery.value.trim())
 
   return products.value.filter((product) => {
-    const searchableText = `${product.nombre} ${product.descripcion}`.toLocaleLowerCase('es')
+    const matchesCategory = selectedCategory.value === 'Todos' || product.categoria === selectedCategory.value
+    if (!matchesCategory) return false
+    if (!query) return true
+
+    const searchableText = normalizeSearchText(`${product.nombre} ${product.descripcion || ''}`)
     return searchableText.includes(query)
   })
 })
@@ -443,7 +500,12 @@ onUnmounted(clearProductImage)
 </script>
 
 <template>
-  <div class="site-shell">
+  <div
+    class="site-shell"
+    @invalid.capture="setSpanishValidationMessage"
+    @input.capture="clearSpanishValidationMessage"
+    @change.capture="clearSpanishValidationMessage"
+  >
     <div class="announcement-bar">
       <span>ROPA INTERIOR PARA SENTIRTE BIEN, TODOS LOS DÍAS</span>
       <span class="announcement-mark" aria-hidden="true">✳</span>
@@ -598,7 +660,21 @@ onUnmounted(clearProductImage)
           </label>
         </div>
 
-        <p class="catalog-count">{{ products.length }} {{ products.length === 1 ? 'prenda' : 'prendas' }} para elegir</p>
+        <nav v-if="!isLoading && !loadError && categoryOptions.length > 1" class="category-tabs" aria-label="Filtrar productos por categoría">
+          <button
+            v-for="category in categoryOptions"
+            :key="category.name"
+            class="category-tab"
+            type="button"
+            :aria-pressed="selectedCategory === category.name"
+            @click="selectedCategory = category.name"
+          >
+            <span>{{ category.name }}</span>
+            <span class="category-tab-count">{{ category.count }}</span>
+          </button>
+        </nav>
+
+        <p class="catalog-count">{{ filteredProducts.length }} {{ filteredProducts.length === 1 ? 'prenda' : 'prendas' }} para elegir</p>
 
         <div v-if="isLoading" class="catalog-message" role="status">
           <span class="loading-mark" aria-hidden="true">✳</span>
@@ -657,8 +733,9 @@ onUnmounted(clearProductImage)
         </div>
 
         <div v-else class="catalog-message">
-          <p>No encontramos prendas con “{{ searchQuery }}”.</p>
-          <button class="text-button" type="button" @click="searchQuery = ''">Ver toda la colección <span aria-hidden="true">↗</span></button>
+          <p v-if="searchQuery">No encontramos prendas con “{{ searchQuery }}”.</p>
+          <p v-else>No hay prendas en la categoría “{{ selectedCategory }}”.</p>
+          <button class="text-button" type="button" @click="searchQuery = ''; selectedCategory = 'Todos'">Ver toda la colección <span aria-hidden="true">↗</span></button>
         </div>
       </section>
 
