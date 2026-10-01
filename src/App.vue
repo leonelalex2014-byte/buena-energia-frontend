@@ -158,6 +158,12 @@ const formatPrice = (price) => new Intl.NumberFormat('es-UY', {
   maximumFractionDigits: 0,
 }).format(Number(price) || 0)
 
+const formatSize = (category, size) => category === 'Infantil' ? `${size} años` : size
+const formatCartSize = (item) => {
+  const category = item.categoria || products.value.find((product) => product.id_producto === item.id_producto)?.categoria
+  return formatSize(category, item.talle)
+}
+
 const imageForVariant = (product, variantId) => {
   const variant = product.variantes?.find((item) => item.id_variante === variantId)
   const color = product.colors?.find((item) => item.name?.toLocaleLowerCase('es') === variant?.color?.toLocaleLowerCase('es'))
@@ -215,6 +221,7 @@ const addToCart = (product) => {
       id_producto: product.id_producto,
       id_variante: variant.id_variante,
       nombre: product.nombre,
+      categoria: product.categoria,
       talle: variant.talle,
       color: variant.color,
       stock: Number(variant.stock),
@@ -253,7 +260,7 @@ const addDetailToCart = () => {
 
 const updateQuantity = (item, change) => {
   if (change > 0 && item.quantity >= item.stock) {
-    cartNotice.value = `Solo hay ${item.stock} unidades disponibles de ${item.nombre} (${item.talle}, ${item.color}).`
+    cartNotice.value = `Solo hay ${item.stock} unidades disponibles de ${item.nombre} (${formatCartSize(item)}, ${item.color}).`
     return
   }
 
@@ -333,7 +340,7 @@ const submitOrder = async () => {
 
   const itemLines = cartItems.value.map((item, index) => {
     const lineTotal = item.precio * item.quantity
-    return `${index + 1}. ${item.nombre} | Talle: ${item.talle} | Color: ${item.color} | Cantidad: ${item.quantity} | ${formatPrice(lineTotal)}`
+    return `${index + 1}. ${item.nombre} | Talle: ${formatCartSize(item)} | Color: ${item.color} | Cantidad: ${item.quantity} | ${formatPrice(lineTotal)}`
   })
 
   const deliveryText = deliveryMethod.value === 'retiro'
@@ -521,6 +528,7 @@ onUnmounted(clearProductImage)
       <nav class="main-nav" aria-label="Navegación principal">
         <a href="#catalogo">Tienda</a>
         <a href="#historia">Nuestra esencia</a>
+        <a href="#contacto">Contacto</a>
       </nav>
 
       <div class="header-actions">
@@ -708,7 +716,7 @@ onUnmounted(clearProductImage)
               <span>Talle y color</span>
               <select v-model.number="selectedVariantIds[product.id_producto]" :aria-label="`Variante de ${product.nombre}`">
                 <option v-for="variant in product.variantes" :key="variant.id_variante" :value="variant.id_variante" :disabled="Number(variant.stock) < 1">
-                  {{ variant.talle }} · {{ variant.color }}{{ Number(variant.stock) < 1 ? ' · Agotado' : ` · ${variant.stock} disponibles` }}
+                  {{ formatSize(product.categoria, variant.talle) }} · {{ variant.color }}{{ Number(variant.stock) < 1 ? ' · Agotado' : ` · ${variant.stock} disponibles` }}
                 </option>
               </select>
             </label>
@@ -744,6 +752,21 @@ onUnmounted(clearProductImage)
         <p>Sentirte bien empieza<br />con lo que eliges <em>para ti.</em></p>
         <span class="brand-note-signature">BUENA ENERGÍA, SIEMPRE.</span>
       </section>
+
+      <section id="contacto" class="contact-section" aria-labelledby="contact-title">
+        <div class="contact-copy">
+          <p class="eyebrow"><span class="eyebrow-line"></span> CONTACTO DIRECTO</p>
+          <h2 id="contact-title">¿Te ayudamos con tu pedido?</h2>
+          <p>Comunícate con Fernanda para consultas sobre talles, prendas o disponibilidad.</p>
+          <a class="contact-phone" href="tel:094449306">Llamar al 094 449 306 <span aria-hidden="true">↗</span></a>
+        </div>
+        <img
+          class="contact-image"
+          src="/contacto-buena-energia.jpeg"
+          alt="Tarjeta de contacto de Buena Energía con Fernanda y el teléfono 094 449 306"
+          loading="lazy"
+        />
+      </section>
     </main>
 
     <footer class="site-footer">
@@ -773,7 +796,7 @@ onUnmounted(clearProductImage)
                 <span>Talle y color</span>
                 <select v-model.number="detailVariantId">
                   <option v-for="variant in selectedProduct.variantes || []" :key="variant.id_variante" :value="variant.id_variante" :disabled="Number(variant.stock) < 1">
-                    {{ variant.talle }} · {{ variant.color }}{{ Number(variant.stock) < 1 ? ' · Agotado' : ` · ${variant.stock} disponibles` }}
+                    {{ formatSize(selectedProduct.categoria, variant.talle) }} · {{ variant.color }}{{ Number(variant.stock) < 1 ? ' · Agotado' : ` · ${variant.stock} disponibles` }}
                   </option>
                 </select>
               </label>
@@ -851,7 +874,7 @@ onUnmounted(clearProductImage)
               <img :src="item.imagen_url" :alt="item.nombre" @error="handleImageError" />
               <div class="cart-item-copy">
                 <h3>{{ item.nombre }}</h3>
-                <span>{{ item.talle }} · {{ item.color }} · {{ formatPrice(item.precio) }}</span>
+                <span>{{ formatCartSize(item) }} · {{ item.color }} · {{ formatPrice(item.precio) }}</span>
                 <div class="quantity-control" :aria-label="`Cantidad de ${item.nombre}`">
                   <button type="button" :aria-label="`Quitar una unidad de ${item.nombre}`" @click="updateQuantity(item, -1)">−</button>
                   <span>{{ item.quantity }}</span>
