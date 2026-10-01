@@ -641,7 +641,7 @@ onUnmounted(clearProductImage)
         <div class="hero-image-wrap">
           <img
             class="hero-image"
-            :src="products[0]?.imagen_url || fallbackImage"
+            :src="products[6]?.imagen_url || fallbackImage"
             alt="Prendas de la colección Buena Energía"
             @error="handleImageError"
           />
