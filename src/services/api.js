@@ -79,3 +79,23 @@ export const createProduct = async (product) => {
   const { data } = await api.post('/admin/productos', formData)
   return data
 }
+
+export const updateVariantStock = async (variantId, stock) => {
+  const { data } = await api.patch(`/admin/variantes/${variantId}/stock`, { stock })
+  return data
+}
+
+export const createOrder = async (order) => {
+  const { data } = await api.post('/pedidos', order)
+  return data
+}
+
+export const getAdminOrders = async () => {
+  const { data } = await api.get('/admin/pedidos')
+  return data
+}
+
+export const updateOrderStatus = async (orderId, status) => {
+  const { data } = await api.patch(`/admin/pedidos/${orderId}`, { estado: status })
+  return data
+}

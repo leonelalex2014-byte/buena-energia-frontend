@@ -1,13 +1,16 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
+  createOrder,
   createProduct,
+  getAdminOrders,
   getCaptchaChallenge,
   getProducts,
   loginAdministrator,
   logoutAdministrator,
   registerAdministrator,
-  verifyCaptcha,
+  updateVariantStock,
+  updateOrderStatus,
 } from './services/api'
 
 const fallbackImage = 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=1200&q=80'
@@ -28,7 +31,7 @@ const captchaChallenge = ref(null)
 const captchaAnswer = ref('')
 const captchaWebsite = ref('')
 const captchaLoading = ref(false)
-const captchaVerifying = ref(false)
+const orderSubmitting = ref(false)
 const deliveryMethod = ref('retiro')
 const customer = ref({ nombre: '', telefono: '', direccion: '', notas: '' })
 const whatsappNumber = (import.meta.env.VITE_WHATSAPP_NUMBER || '').replace(/\D/g, '')
@@ -38,12 +41,26 @@ const authMode = ref('login')
 const authLoading = ref(false)
 const authError = ref('')
 const isAdminPanelOpen = ref(false)
+const adminTab = ref('pedidos')
+const showProductForm = ref(false)
 const productLoading = ref(false)
 const productError = ref('')
 const productSuccess = ref('')
 const productImageFile = ref(null)
 const productImagePreview = ref('')
 const productImageInput = ref(null)
+const stockDrafts = ref({})
+const stockLoading = ref(false)
+const stockError = ref('')
+const stockSuccess = ref('')
+const inventorySearch = ref('')
+const inventoryFilter = ref('todos')
+const expandedInventoryProductIds = ref([])
+const orders = ref([])
+const ordersLoading = ref(false)
+const ordersError = ref('')
+const ordersSuccess = ref('')
+const updatingOrderId = ref(null)
 
 const setSpanishValidationMessage = (event) => {
   const field = event.target
@@ -111,6 +128,11 @@ function emptyProductForm() {
   }
 }
 
+const normalizeSearchText = (value) => String(value ?? '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLocaleLowerCase('es')
+
 const categoryOptions = computed(() => {
   const categories = [...new Set(products.value.map((product) => product.categoria).filter(Boolean))]
     .sort((firstCategory, secondCategory) => firstCategory.localeCompare(secondCategory, 'es'))
@@ -124,10 +146,29 @@ const categoryOptions = computed(() => {
   ]
 })
 
-const normalizeSearchText = (value) => String(value ?? '')
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLocaleLowerCase('es')
+const pendingOrderCount = computed(() => orders.value.filter((order) => order.estado === 'Pendiente').length)
+const filteredInventoryProducts = computed(() => {
+  const query = normalizeSearchText(inventorySearch.value.trim())
+
+  return products.value
+    .map((product) => {
+      const productMatches = normalizeSearchText(product.nombre).includes(query)
+      const inventoryVariants = (product.variantes || []).filter((variant) => {
+        const stock = Number(stockDrafts.value[variant.id_variante] ?? variant.stock)
+        const matchesFilter = inventoryFilter.value === 'todos'
+          || (inventoryFilter.value === 'poco' && stock > 0 && stock <= 5)
+          || (inventoryFilter.value === 'agotado' && stock === 0)
+        const matchesSearch = !query
+          || productMatches
+          || normalizeSearchText(`${variant.talle} ${variant.color}`).includes(query)
+
+        return matchesFilter && matchesSearch
+      })
+
+      return { ...product, inventoryVariants }
+    })
+    .filter((product) => product.inventoryVariants.length > 0)
+})
 
 const filteredProducts = computed(() => {
   const query = normalizeSearchText(searchQuery.value.trim())
@@ -164,6 +205,11 @@ const formatCartSize = (item) => {
   return formatSize(category, item.talle)
 }
 
+const productStockTotal = (product, variants = product.variantes || []) => variants.reduce(
+  (total, variant) => total + Number(variant.stock),
+  0,
+)
+
 const imageForVariant = (product, variantId) => {
   const variant = product.variantes?.find((item) => item.id_variante === variantId)
   const color = product.colors?.find((item) => item.name?.toLocaleLowerCase('es') === variant?.color?.toLocaleLowerCase('es'))
@@ -176,6 +222,9 @@ const loadCatalog = async () => {
 
   try {
     products.value = await getProducts()
+    stockDrafts.value = Object.fromEntries(products.value.flatMap((product) =>
+      (product.variantes || []).map((variant) => [variant.id_variante, Number(variant.stock)]),
+    ))
     const selections = { ...selectedVariantIds.value }
 
     for (const product of products.value) {
@@ -321,50 +370,72 @@ const submitOrder = async () => {
   }
 
   whatsappWindow.opener = null
-  captchaVerifying.value = true
+  orderSubmitting.value = true
+  let orderResponse
 
   try {
-    await verifyCaptcha({
-      challenge_id: captchaChallenge.value.challenge_id,
-      answer: captchaAnswer.value,
+    orderResponse = await createOrder({
+      cliente: {
+        nombre: customer.value.nombre.trim(),
+        telefono: customer.value.telefono.trim(),
+      },
+      entrega: deliveryMethod.value,
+      direccion: deliveryMethod.value === 'domicilio' ? customer.value.direccion.trim() : null,
+      notas: customer.value.notas.trim() || null,
+      items: cartItems.value.map((item) => ({
+        id_variante: item.id_variante,
+        cantidad: item.quantity,
+      })),
+      captcha_challenge_id: captchaChallenge.value.challenge_id,
+      captcha_answer: Number(captchaAnswer.value),
       website: captchaWebsite.value,
     })
   } catch (error) {
     whatsappWindow.close()
-    checkoutError.value = error.response?.data?.message || 'No se pudo validar la verificación.'
+    const validationErrors = error.response?.data?.errors
+    checkoutError.value = validationErrors
+      ? Object.values(validationErrors).flat().join(' ')
+      : error.response?.data?.message || 'No se pudo registrar el pedido.'
     await loadCaptchaChallenge()
+    if (error.response?.status === 422) await loadCatalog()
     return
   } finally {
-    captchaVerifying.value = false
+    orderSubmitting.value = false
   }
 
-  const itemLines = cartItems.value.map((item, index) => {
-    const lineTotal = item.precio * item.quantity
-    return `${index + 1}. ${item.nombre} | Talle: ${formatCartSize(item)} | Color: ${item.color} | Cantidad: ${item.quantity} | ${formatPrice(lineTotal)}`
-  })
+  const order = orderResponse.order
+  const itemLines = order.detalles.map((item, index) =>
+    `${index + 1}. ${item.nombre} | Talle: ${formatSize(item.categoria, item.talle)} | Color: ${item.color} | Cantidad: ${item.cantidad} | ${formatPrice(Number(item.precio_unitario) * item.cantidad)}`,
+  )
 
-  const deliveryText = deliveryMethod.value === 'retiro'
+  const deliveryText = order.tipo_entrega === 'retiro'
     ? 'Retiro en el local'
-    : `Entrega a domicilio\nDirección: ${customer.value.direccion.trim()}\nEnvío: por confirmar con la tienda`
+    : `Entrega a domicilio\nDirección: ${order.cliente.direccion}\nEnvío: por confirmar con la tienda`
 
   const message = [
-    '*NUEVO PEDIDO · BUENA ENERGÍA*',
+    `*PEDIDO #${order.id_pedido} · BUENA ENERGÍA*`,
     '',
-    `Cliente: ${customer.value.nombre.trim()}`,
-    `Teléfono: ${customer.value.telefono.trim()}`,
+    `Cliente: ${order.cliente.nombre}`,
+    `Teléfono: ${order.cliente.telefono}`,
     `Entrega: ${deliveryText}`,
     '',
     '*PRODUCTOS*',
     ...itemLines,
     '',
-    `*Subtotal: ${formatPrice(cartTotal.value)}*`,
-    ...(customer.value.notas.trim() ? ['', `Notas: ${customer.value.notas.trim()}`] : []),
+    `*Subtotal: ${formatPrice(order.total)}*`,
+    ...(order.notas ? ['', `Notas: ${order.notas}`] : []),
     '',
-    'Por favor confirma disponibilidad y costo de envío.',
+    'Pedido pendiente de confirmación de disponibilidad y costo de envío.',
   ].join('\n')
 
   const whatsappUrl = `https://wa.me/${whatsappNumber}?text=${encodeURIComponent(message)}`
   whatsappWindow.location.href = whatsappUrl
+  cartItems.value = []
+  saveCart()
+  isCheckoutOpen.value = false
+  isCartOpen.value = false
+  captchaAnswer.value = ''
+  captchaChallenge.value = null
 }
 
 const handleImageError = (event) => {
@@ -412,6 +483,74 @@ const logout = async () => {
     isAdminPanelOpen.value = false
   }
 }
+
+const toggleAdminPanel = () => {
+  isAdminPanelOpen.value = !isAdminPanelOpen.value
+
+  if (isAdminPanelOpen.value) {
+    void loadAdminOrders()
+    void loadCatalog()
+  }
+}
+
+const toggleInventoryProduct = (productId) => {
+  expandedInventoryProductIds.value = expandedInventoryProductIds.value.includes(productId)
+    ? expandedInventoryProductIds.value.filter((id) => id !== productId)
+    : [...expandedInventoryProductIds.value, productId]
+}
+
+const openProductForm = () => {
+  showProductForm.value = !showProductForm.value
+  productError.value = ''
+
+  if (showProductForm.value) {
+    productSuccess.value = ''
+  }
+}
+
+const loadAdminOrders = async () => {
+  ordersLoading.value = true
+  ordersError.value = ''
+  ordersSuccess.value = ''
+
+  try {
+    orders.value = await getAdminOrders()
+  } catch (error) {
+    orders.value = []
+    ordersError.value = error.response?.data?.message || 'No se pudieron cargar los pedidos.'
+  } finally {
+    ordersLoading.value = false
+  }
+}
+
+const changeOrderStatus = async (order, status) => {
+  updatingOrderId.value = order.id_pedido
+  ordersError.value = ''
+  ordersSuccess.value = ''
+
+  try {
+    const response = await updateOrderStatus(order.id_pedido, status)
+    order.estado = response.order.estado
+    ordersSuccess.value = `El pedido #${order.id_pedido} quedó ${order.estado.toLowerCase()}.`
+
+    if (status === 'Confirmado' || status === 'Cancelado') {
+      await loadCatalog()
+    }
+  } catch (error) {
+    const validationErrors = error.response?.data?.errors
+    ordersError.value = validationErrors
+      ? Object.values(validationErrors).flat().join(' ')
+      : error.response?.data?.message || 'No se pudo actualizar el pedido.'
+    await loadAdminOrders()
+  } finally {
+    updatingOrderId.value = null
+  }
+}
+
+const formatOrderDate = (date) => new Intl.DateTimeFormat('es-UY', {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+}).format(new Date(date))
 
 const addVariant = () => {
   if (productForm.value.variantes.length < 40) {
@@ -478,6 +617,7 @@ const submitProduct = async () => {
     productForm.value = emptyProductForm()
     clearProductImage()
     productSuccess.value = 'Producto creado y añadido al catálogo.'
+    showProductForm.value = false
     await loadCatalog()
   } catch (error) {
     const validationErrors = error.response?.data?.errors
@@ -486,6 +626,34 @@ const submitProduct = async () => {
       : error.response?.data?.message || 'No se pudo crear el producto.'
   } finally {
     productLoading.value = false
+  }
+}
+
+const saveVariantStock = async (variant) => {
+  const stock = stockDrafts.value[variant.id_variante]
+
+  if (!Number.isInteger(stock) || stock < 0 || stock > 2147483647) {
+    stockError.value = 'Ingresa una cantidad entera entre 0 y 2147483647.'
+    stockSuccess.value = ''
+    return
+  }
+
+  stockLoading.value = true
+  stockError.value = ''
+  stockSuccess.value = ''
+
+  try {
+    const response = await updateVariantStock(variant.id_variante, stock)
+    variant.stock = Number(response.variant.stock)
+    stockDrafts.value[variant.id_variante] = variant.stock
+    stockSuccess.value = `Stock actualizado para ${variant.talle} · ${variant.color}.`
+  } catch (error) {
+    const validationErrors = error.response?.data?.errors
+    stockError.value = validationErrors
+      ? Object.values(validationErrors).flat().join(' ')
+      : error.response?.data?.message || 'No se pudo actualizar el stock.'
+  } finally {
+    stockLoading.value = false
   }
 }
 
@@ -532,7 +700,7 @@ onUnmounted(clearProductImage)
       </nav>
 
       <div class="header-actions">
-        <button v-if="isAdministrator" class="account-trigger" type="button" @click="isAdminPanelOpen = !isAdminPanelOpen">
+        <button v-if="isAdministrator" class="account-trigger" type="button" @click="toggleAdminPanel">
           {{ isAdminPanelOpen ? 'Cerrar panel' : 'Administración' }}
         </button>
         <button v-if="isAdministrator" class="account-trigger logout-trigger" type="button" @click="logout">Salir</button>
@@ -549,85 +717,305 @@ onUnmounted(clearProductImage)
         <div class="admin-heading">
           <div>
             <p class="eyebrow"><span class="eyebrow-line"></span> GESTIÓN DE TIENDA</p>
-            <h2 id="admin-title">Agregar producto</h2>
-            <p>Registra cada combinación de talle y color con su inventario.</p>
+            <h2 id="admin-title">Panel de administración</h2>
+            <p>Pedidos, productos e inventario en un solo lugar.</p>
           </div>
           <span class="admin-badge">{{ currentUser.nombre }}</span>
         </div>
 
-        <form class="admin-form" @submit.prevent="submitProduct">
-          <div class="admin-fields">
-            <label class="admin-field">
-              <span>Nombre *</span>
-              <input v-model.trim="productForm.nombre" type="text" maxlength="255" required />
-            </label>
-            <label class="admin-field">
-              <span>Categoría *</span>
-              <input v-model.trim="productForm.categoria" type="text" list="admin-categories" maxlength="255" required />
-              <datalist id="admin-categories">
-                <option value="Mujer" />
-                <option value="Hombre" />
-                <option value="Unisex" />
-              </datalist>
-            </label>
-            <label class="admin-field">
-              <span>Precio *</span>
-              <input v-model="productForm.precio" type="number" min="0.01" max="99999999.99" step="0.01" required />
-            </label>
-            <label class="admin-field">
-              <span>Imagen del producto</span>
-              <input
-                ref="productImageInput"
-                class="image-file-input"
-                type="file"
-                accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-                @change="handleProductImageSelection"
-              />
-              <span class="image-upload-hint">JPG, PNG o WebP · máximo 5 MB</span>
-              <div v-if="productImagePreview" class="image-preview-row">
-                <img :src="productImagePreview" alt="Vista previa de la imagen seleccionada" class="image-preview" />
-                <button class="admin-secondary" type="button" @click="clearProductImage">Quitar imagen</button>
-              </div>
-              <input v-model.trim="productForm.imagen" type="url" maxlength="255" placeholder="O pega una URL de imagen" />
-            </label>
-            <label class="admin-field admin-field-wide">
-              <span>Descripción</span>
-              <textarea v-model.trim="productForm.descripcion" rows="3"></textarea>
-            </label>
-          </div>
-
-          <div class="admin-variant-heading">
-            <div>
-              <h3>Variantes *</h3>
-              <p>Al menos una; máximo 40 por producto.</p>
-            </div>
-            <button class="admin-secondary" type="button" @click="addVariant">Añadir variante</button>
-          </div>
-
-          <div class="admin-variants">
-            <div v-for="(variant, index) in productForm.variantes" :key="index" class="admin-variant-row">
-              <label class="admin-field">
-                <span>Talle *</span>
-                <input v-model.trim="variant.talle" type="text" maxlength="255" placeholder="M" required />
-              </label>
-              <label class="admin-field">
-                <span>Color *</span>
-                <input v-model.trim="variant.color" type="text" maxlength="255" placeholder="Negro" required />
-              </label>
-              <label class="admin-field">
-                <span>Stock *</span>
-                <input v-model.number="variant.stock" type="number" min="0" max="2147483647" step="1" required />
-              </label>
-              <button class="admin-remove-variant" type="button" :disabled="productForm.variantes.length === 1" aria-label="Eliminar variante" @click="removeVariant(index)">×</button>
-            </div>
-          </div>
-
-          <p v-if="productError" class="admin-message admin-error" role="alert">{{ productError }}</p>
-          <p v-if="productSuccess" class="admin-message admin-success" role="status">{{ productSuccess }}</p>
-          <button class="admin-submit" type="submit" :disabled="productLoading">
-            {{ productLoading ? 'GUARDANDO...' : 'CREAR PRODUCTO' }}
+        <nav class="admin-tabs" aria-label="Secciones de administración">
+          <button
+            type="button"
+            :class="{ active: adminTab === 'pedidos' }"
+            :aria-pressed="adminTab === 'pedidos'"
+            aria-controls="admin-orders"
+            @click="adminTab = 'pedidos'"
+          >
+            Pedidos <span v-if="pendingOrderCount" class="admin-tab-count">{{ pendingOrderCount }}</span>
           </button>
-        </form>
+          <button
+            type="button"
+            :class="{ active: adminTab === 'inventario' }"
+            :aria-pressed="adminTab === 'inventario'"
+            aria-controls="admin-inventory"
+            @click="adminTab = 'inventario'"
+          >
+            Inventario
+          </button>
+          <button
+            type="button"
+            :class="{ active: adminTab === 'productos' }"
+            :aria-pressed="adminTab === 'productos'"
+            aria-controls="admin-products"
+            @click="adminTab = 'productos'"
+          >
+            Productos
+          </button>
+        </nav>
+
+        <div v-if="adminTab === 'pedidos'" id="admin-orders" class="admin-tab-panel">
+          <div class="admin-variant-heading orders-heading">
+            <div>
+              <h3>Pedidos recibidos</h3>
+              <p>Confirma la disponibilidad para descontar el stock o cancela pedidos que no puedas atender.</p>
+            </div>
+            <button class="admin-secondary" type="button" :disabled="ordersLoading" @click="loadAdminOrders">
+              {{ ordersLoading ? 'CARGANDO...' : 'Actualizar pedidos' }}
+            </button>
+          </div>
+          <p v-if="ordersError" class="admin-message admin-error" role="alert">{{ ordersError }}</p>
+          <p v-if="ordersSuccess" class="admin-message admin-success" role="status">{{ ordersSuccess }}</p>
+          <p v-if="ordersLoading && !orders.length" class="admin-message" role="status">Cargando pedidos...</p>
+          <p v-else-if="!ordersLoading && !ordersError && !orders.length" class="admin-message">Todavía no hay pedidos registrados.</p>
+          <div v-if="orders.length" class="orders-list">
+            <article v-for="order in orders" :key="order.id_pedido" class="order-card">
+              <header class="order-card-heading">
+                <div>
+                  <h4>Pedido #{{ order.id_pedido }}</h4>
+                  <span>{{ formatOrderDate(order.fecha) }}</span>
+                </div>
+                <span class="order-status" :class="`order-status-${order.estado.toLowerCase()}`">{{ order.estado }}</span>
+              </header>
+              <div class="order-customer">
+                <strong>{{ order.cliente.nombre }}</strong>
+                <a :href="`tel:${order.cliente.telefono}`">{{ order.cliente.telefono }}</a>
+                <span>{{ order.tipo_entrega === 'retiro' ? 'Retiro en el local' : `Entrega: ${order.cliente.direccion}` }}</span>
+              </div>
+              <ul class="order-lines">
+                <li v-for="(item, index) in order.detalles" :key="`${order.id_pedido}-${index}`">
+                  <span>{{ item.nombre }} · {{ formatSize(item.categoria, item.talle) }} · {{ item.color }} × {{ item.cantidad }}</span>
+                  <strong>{{ formatPrice(Number(item.precio_unitario) * item.cantidad) }}</strong>
+                </li>
+              </ul>
+              <p v-if="order.notas" class="order-notes"><strong>Notas:</strong> {{ order.notas }}</p>
+              <footer class="order-card-footer">
+                <strong>Total {{ formatPrice(order.total) }}</strong>
+                <div class="order-actions">
+                  <button
+                    v-if="order.estado === 'Pendiente'"
+                    class="admin-secondary"
+                    type="button"
+                    :disabled="updatingOrderId === order.id_pedido"
+                    @click="changeOrderStatus(order, 'Cancelado')"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    v-if="order.estado === 'Pendiente'"
+                    class="admin-submit order-action-primary"
+                    type="button"
+                    :disabled="updatingOrderId === order.id_pedido"
+                    @click="changeOrderStatus(order, 'Confirmado')"
+                  >
+                    {{ updatingOrderId === order.id_pedido ? 'ACTUALIZANDO...' : 'Confirmar pedido' }}
+                  </button>
+                  <template v-else-if="order.estado === 'Confirmado'">
+                    <button
+                      class="admin-secondary"
+                      type="button"
+                      :disabled="updatingOrderId === order.id_pedido"
+                      @click="changeOrderStatus(order, 'Cancelado')"
+                    >
+                      Cancelar y devolver stock
+                    </button>
+                    <button
+                      class="admin-submit order-action-primary"
+                      type="button"
+                      :disabled="updatingOrderId === order.id_pedido"
+                      @click="changeOrderStatus(order, 'Entregado')"
+                    >
+                      {{ updatingOrderId === order.id_pedido ? 'ACTUALIZANDO...' : 'Marcar entregado' }}
+                    </button>
+                  </template>
+                </div>
+              </footer>
+            </article>
+          </div>
+        </div>
+
+        <div v-else-if="adminTab === 'productos'" id="admin-products" class="admin-tab-panel">
+          <div class="product-form-toggle">
+            <div>
+              <h3>Agregar producto</h3>
+              <p>Registra una prenda nueva con sus variantes e inventario inicial.</p>
+            </div>
+            <button
+              class="admin-submit product-toggle-button"
+              type="button"
+              aria-controls="product-create-form"
+              :aria-expanded="showProductForm"
+              @click="openProductForm"
+            >
+              {{ showProductForm ? 'Cerrar formulario' : '+ Agregar producto' }}
+            </button>
+          </div>
+          <p v-if="productSuccess" class="admin-message admin-success" role="status">{{ productSuccess }}</p>
+          <form v-if="showProductForm" id="product-create-form" class="admin-form product-create-form" @submit.prevent="submitProduct">
+            <div class="admin-fields">
+              <label class="admin-field">
+                <span>Nombre *</span>
+                <input v-model.trim="productForm.nombre" type="text" maxlength="255" required />
+              </label>
+              <label class="admin-field">
+                <span>Categoría *</span>
+                <input v-model.trim="productForm.categoria" type="text" list="admin-categories" maxlength="255" required />
+                <datalist id="admin-categories">
+                  <option value="Mujer" />
+                  <option value="Hombre" />
+                  <option value="Unisex" />
+                </datalist>
+              </label>
+              <label class="admin-field">
+                <span>Precio *</span>
+                <input v-model="productForm.precio" type="number" min="0.01" max="99999999.99" step="0.01" required />
+              </label>
+              <label class="admin-field">
+                <span>Imagen del producto</span>
+                <input
+                  ref="productImageInput"
+                  class="image-file-input"
+                  type="file"
+                  accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+                  @change="handleProductImageSelection"
+                />
+                <span class="image-upload-hint">JPG, PNG o WebP · máximo 5 MB</span>
+                <div v-if="productImagePreview" class="image-preview-row">
+                  <img :src="productImagePreview" alt="Vista previa de la imagen seleccionada" class="image-preview" />
+                  <button class="admin-secondary" type="button" @click="clearProductImage">Quitar imagen</button>
+                </div>
+                <input v-model.trim="productForm.imagen" type="url" maxlength="255" placeholder="O pega una URL de imagen" />
+              </label>
+              <label class="admin-field admin-field-wide">
+                <span>Descripción</span>
+                <textarea v-model.trim="productForm.descripcion" rows="3"></textarea>
+              </label>
+            </div>
+
+            <div class="admin-variant-heading">
+              <div>
+                <h3>Variantes *</h3>
+                <p>Al menos una; máximo 40 por producto.</p>
+              </div>
+              <button class="admin-secondary" type="button" @click="addVariant">Añadir variante</button>
+            </div>
+
+            <div class="admin-variants">
+              <div v-for="(variant, index) in productForm.variantes" :key="index" class="admin-variant-row">
+                <label class="admin-field">
+                  <span>Talle *</span>
+                  <input v-model.trim="variant.talle" type="text" maxlength="255" placeholder="M" required />
+                </label>
+                <label class="admin-field">
+                  <span>Color *</span>
+                  <input v-model.trim="variant.color" type="text" maxlength="255" placeholder="Negro" required />
+                </label>
+                <label class="admin-field">
+                  <span>Stock *</span>
+                  <input v-model.number="variant.stock" type="number" min="0" max="2147483647" step="1" required />
+                </label>
+                <button class="admin-remove-variant" type="button" :disabled="productForm.variantes.length === 1" aria-label="Eliminar variante" @click="removeVariant(index)">×</button>
+              </div>
+            </div>
+
+            <p v-if="productError" class="admin-message admin-error" role="alert">{{ productError }}</p>
+            <div class="product-form-actions">
+              <button class="admin-submit" type="submit" :disabled="productLoading">
+                {{ productLoading ? 'GUARDANDO...' : 'CREAR PRODUCTO' }}
+              </button>
+              <button class="admin-secondary product-cancel-button" type="button" :disabled="productLoading" @click="showProductForm = false">
+                Cerrar sin guardar
+              </button>
+            </div>
+          </form>
+        </div>
+
+        <div v-else id="admin-inventory" class="admin-tab-panel inventory-tab">
+          <div class="inventory-toolbar">
+            <label class="inventory-search">
+              <span>Buscar por producto, talle o color</span>
+              <input v-model="inventorySearch" type="search" placeholder="Ej. azul, M, bóxer" />
+            </label>
+            <label class="inventory-filter">
+              <span>Mostrar</span>
+              <select v-model="inventoryFilter">
+                <option value="todos">Todas las variantes</option>
+                <option value="poco">Poco stock (1–5)</option>
+                <option value="agotado">Agotadas</option>
+              </select>
+            </label>
+          </div>
+          <p class="inventory-help">Expande un producto para ajustar unidades por talle y color. Usa 0 para agotarlo.</p>
+          <p v-if="stockError" class="admin-message admin-error" role="alert">{{ stockError }}</p>
+          <p v-if="stockSuccess" class="admin-message admin-success" role="status">{{ stockSuccess }}</p>
+          <div v-if="filteredInventoryProducts.length" class="inventory-list">
+            <div
+              v-for="product in filteredInventoryProducts"
+              :key="product.id_producto"
+              class="inventory-product"
+            >
+              <button
+                class="inventory-product-toggle"
+                type="button"
+                :aria-controls="`inventory-variants-${product.id_producto}`"
+                :aria-expanded="expandedInventoryProductIds.includes(product.id_producto)"
+                @click="toggleInventoryProduct(product.id_producto)"
+              >
+                <span class="inventory-product-name">{{ product.nombre }}</span>
+                <span class="inventory-product-summary">
+                  {{ product.inventoryVariants.length }} {{ product.inventoryVariants.length === 1 ? 'variante' : 'variantes' }}
+                  <span aria-hidden="true">·</span>
+                  {{ productStockTotal(product, product.inventoryVariants) }} unidades
+                </span>
+                <span class="inventory-expand-mark" aria-hidden="true">{{ expandedInventoryProductIds.includes(product.id_producto) ? '−' : '+' }}</span>
+              </button>
+              <div
+                v-if="expandedInventoryProductIds.includes(product.id_producto)"
+                :id="`inventory-variants-${product.id_producto}`"
+                class="inventory-variants"
+              >
+                <div
+                  v-for="variant in product.inventoryVariants"
+                  :key="variant.id_variante"
+                  class="inventory-row"
+                >
+                  <span class="inventory-variant">{{ formatSize(product.categoria, variant.talle) }} · {{ variant.color }}</span>
+                  <label class="inventory-stock-field" :for="`stock-${variant.id_variante}`">
+                    <span>Unidades</span>
+                    <input
+                      :id="`stock-${variant.id_variante}`"
+                      v-model.number="stockDrafts[variant.id_variante]"
+                      type="number"
+                      min="0"
+                      max="2147483647"
+                      step="1"
+                      required
+                      :disabled="stockLoading"
+                    />
+                  </label>
+                  <span
+                    class="inventory-status"
+                    :class="{
+                      'inventory-out-of-stock': Number(stockDrafts[variant.id_variante]) === 0,
+                      'inventory-low-stock': Number(stockDrafts[variant.id_variante]) > 0 && Number(stockDrafts[variant.id_variante]) <= 5,
+                    }"
+                  >
+                    {{ Number(stockDrafts[variant.id_variante]) === 0 ? 'Agotado' : Number(stockDrafts[variant.id_variante]) <= 5 ? 'Poco stock' : 'Disponible' }}
+                  </span>
+                  <button
+                    class="admin-secondary inventory-save"
+                    type="button"
+                    :disabled="stockLoading || Number(stockDrafts[variant.id_variante]) === Number(variant.stock)"
+                    @click="saveVariantStock(variant)"
+                  >
+                    {{ stockLoading ? 'GUARDANDO...' : 'Guardar' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p v-else-if="!products.length" class="admin-message">Todavía no hay productos para administrar.</p>
+          <p v-else class="admin-message">No encontramos variantes con esos filtros.</p>
+        </div>
       </section>
 
       <section id="inicio" class="hero-section">
@@ -893,7 +1281,7 @@ onUnmounted(clearProductImage)
 
           <div v-if="cartItems.length" class="cart-footer">
             <div class="cart-subtotal"><span>Subtotal</span><strong>{{ formatPrice(cartTotal) }}</strong></div>
-            <p class="checkout-note">El envío se confirma con la tienda por WhatsApp.</p>
+            <p class="checkout-note">El pedido queda pendiente; la tienda confirmará stock y envío por WhatsApp.</p>
             <button class="checkout-button" type="button" @click="openCheckout">Continuar por WhatsApp</button>
           </div>
         </aside>
@@ -971,9 +1359,9 @@ onUnmounted(clearProductImage)
             <button
               class="admin-submit whatsapp-submit"
               type="submit"
-              :disabled="!whatsappConfigured || captchaLoading || captchaVerifying || !captchaChallenge"
+              :disabled="!whatsappConfigured || captchaLoading || orderSubmitting || !captchaChallenge"
             >
-              {{ captchaVerifying ? 'Verificando...' : 'Enviar pedido por WhatsApp' }}
+              {{ orderSubmitting ? 'Registrando pedido...' : 'Enviar pedido por WhatsApp' }}
             </button>
           </form>
         </section>
