@@ -59,7 +59,7 @@ export const registerAdministrator = async (details) => {
 
 export const logoutAdministrator = () => api.post('/admin/logout')
 
-export const createProduct = async (product) => {
+const productFormData = (product, includeVariantIds = false) => {
   const formData = new FormData()
 
   for (const field of ['nombre', 'precio', 'categoria']) {
@@ -67,16 +67,33 @@ export const createProduct = async (product) => {
   }
 
   if (product.descripcion) formData.append('descripcion', product.descripcion)
-  if (product.imagen) formData.append('imagen', product.imagen)
+  formData.append('imagen', product.imagen || '')
   if (product.imagen_archivo) formData.append('imagen_archivo', product.imagen_archivo)
 
   product.variantes.forEach((variant, index) => {
+    if (includeVariantIds && variant.id_variante) {
+      formData.append(`variantes[${index}][id_variante]`, variant.id_variante)
+    }
+
     formData.append(`variantes[${index}][talle]`, variant.talle)
     formData.append(`variantes[${index}][color]`, variant.color)
     formData.append(`variantes[${index}][stock]`, variant.stock)
   })
 
+  return formData
+}
+
+export const createProduct = async (product) => {
+  const formData = productFormData(product)
   const { data } = await api.post('/admin/productos', formData)
+  return data
+}
+
+export const updateProduct = async (productId, product) => {
+  const formData = productFormData(product, true)
+  formData.append('_method', 'PATCH')
+
+  const { data } = await api.post(`/admin/productos/${productId}`, formData)
   return data
 }
 

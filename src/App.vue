@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import {
   createOrder,
   createProduct,
@@ -10,6 +10,7 @@ import {
   logoutAdministrator,
   registerAdministrator,
   updateVariantStock,
+  updateProduct,
   updateOrderStatus,
 } from './services/api'
 
@@ -25,6 +26,12 @@ const selectedVariantIds = ref({})
 const selectedProduct = ref(null)
 const detailVariantId = ref(null)
 const cartNotice = ref('')
+const cartNoticeType = ref('info')
+const cartFeedback = ref('')
+const cartFeedbackType = ref('success')
+const lastAddedVariantId = ref(null)
+let cartFeedbackTimeout
+let lastAddedTimeout
 const isCheckoutOpen = ref(false)
 const checkoutError = ref('')
 const captchaChallenge = ref(null)
@@ -43,12 +50,16 @@ const authError = ref('')
 const isAdminPanelOpen = ref(false)
 const adminTab = ref('pedidos')
 const showProductForm = ref(false)
+const editingProductId = ref(null)
+const productManagementSearch = ref('')
 const productLoading = ref(false)
 const productError = ref('')
 const productSuccess = ref('')
 const productImageFile = ref(null)
 const productImagePreview = ref('')
 const productImageInput = ref(null)
+const productEditorForm = ref(null)
+const productNameInput = ref(null)
 const stockDrafts = ref({})
 const stockLoading = ref(false)
 const stockError = ref('')
@@ -170,21 +181,36 @@ const filteredInventoryProducts = computed(() => {
     .filter((product) => product.inventoryVariants.length > 0)
 })
 
+const filteredAdminProducts = computed(() => {
+  const query = normalizeSearchText(productManagementSearch.value.trim())
+
+  return products.value.filter((product) => !query
+    || normalizeSearchText(`${product.nombre} ${product.categoria}`).includes(query))
+})
+
 const filteredProducts = computed(() => {
-  const query = normalizeSearchText(searchQuery.value.trim())
+  const queryTerms = normalizeSearchText(searchQuery.value).trim().split(/\s+/).filter(Boolean)
 
   return products.value.filter((product) => {
     const matchesCategory = selectedCategory.value === 'Todos' || product.categoria === selectedCategory.value
     if (!matchesCategory) return false
-    if (!query) return true
+    if (!queryTerms.length) return true
 
-    const searchableText = normalizeSearchText(`${product.nombre} ${product.descripcion || ''}`)
-    return searchableText.includes(query)
+    const searchableText = normalizeSearchText([
+      product.nombre,
+      product.descripcion,
+      product.categoria,
+      ...(product.variantes || []).flatMap((variant) => [variant.talle, formatSize(product.categoria, variant.talle), variant.color]),
+      ...(product.colors || []).map((color) => color.name),
+    ].join(' '))
+
+    return queryTerms.every((term) => searchableText.includes(term))
   })
 })
 
 const cartCount = computed(() => cartItems.value.reduce((total, item) => total + item.quantity, 0))
 const cartTotal = computed(() => cartItems.value.reduce((total, item) => total + item.precio * item.quantity, 0))
+const cartLabel = computed(() => `Bolsa · ${cartCount.value} ${cartCount.value === 1 ? 'artículo' : 'artículos'}`)
 const whatsappConfigured = computed(() => whatsappNumber.length >= 10)
 const detailVariant = computed(() => selectedProduct.value?.variantes?.find(
   (variant) => variant.id_variante === detailVariantId.value,
@@ -213,7 +239,18 @@ const productStockTotal = (product, variants = product.variantes || []) => varia
 const imageForVariant = (product, variantId) => {
   const variant = product.variantes?.find((item) => item.id_variante === variantId)
   const color = product.colors?.find((item) => item.name?.toLocaleLowerCase('es') === variant?.color?.toLocaleLowerCase('es'))
-  return color?.image || product.imagen_url || fallbackImage
+  return variant?.imagen_url || color?.image || product.imagen_url || fallbackImage
+}
+
+const adminProductImage = (product) => {
+  const selectedVariantId = selectedVariantIds.value[product.id_producto]
+  const representativeVariant = product.variantes?.find((variant) => variant.id_variante === selectedVariantId)
+    || product.variantes?.find((variant) => Number(variant.stock) > 0)
+    || product.variantes?.[0]
+
+  return representativeVariant
+    ? imageForVariant(product, representativeVariant.id_variante)
+    : product.imagen_url || fallbackImage
 }
 
 const loadCatalog = async () => {
@@ -222,6 +259,24 @@ const loadCatalog = async () => {
 
   try {
     products.value = await getProducts()
+    cartItems.value = cartItems.value.map((item) => {
+      const product = products.value.find((catalogProduct) => Number(catalogProduct.id_producto) === Number(item.id_producto))
+      const variant = product?.variantes?.find((catalogVariant) => Number(catalogVariant.id_variante) === Number(item.id_variante))
+
+      if (!product || !variant) return item
+
+      return {
+        ...item,
+        nombre: product.nombre,
+        categoria: product.categoria,
+        talle: variant.talle,
+        color: variant.color,
+        precio: Number(product.precio) || 0,
+        stock: Number(variant.stock),
+        imagen_url: imageForVariant(product, variant.id_variante),
+      }
+    })
+    saveCart()
     stockDrafts.value = Object.fromEntries(products.value.flatMap((product) =>
       (product.variantes || []).map((variant) => [variant.id_variante, Number(variant.stock)]),
     ))
@@ -249,11 +304,36 @@ const saveCart = () => {
   localStorage.setItem('buena-energia-cart', JSON.stringify(cartItems.value))
 }
 
+const showCartFeedback = (message, type = 'success') => {
+  cartFeedback.value = message
+  cartFeedbackType.value = type
+
+  if (cartFeedbackTimeout) window.clearTimeout(cartFeedbackTimeout)
+  cartFeedbackTimeout = window.setTimeout(() => {
+    cartFeedback.value = ''
+  }, 3200)
+}
+
+const announceCartNotice = (message, type = 'error') => {
+  cartNotice.value = message
+  cartNoticeType.value = type
+  showCartFeedback(message, type)
+}
+
+const flashAddedVariant = (variantId) => {
+  lastAddedVariantId.value = variantId
+
+  if (lastAddedTimeout) window.clearTimeout(lastAddedTimeout)
+  lastAddedTimeout = window.setTimeout(() => {
+    if (lastAddedVariantId.value === variantId) lastAddedVariantId.value = null
+  }, 1400)
+}
+
 const addToCart = (product) => {
   const variant = product.variantes?.find((item) => item.id_variante === selectedVariantIds.value[product.id_producto])
 
   if (!variant || Number(variant.stock) < 1) {
-    cartNotice.value = 'Esta prenda no tiene variantes disponibles.'
+    announceCartNotice('Esta prenda no tiene variantes disponibles.')
     return false
   }
 
@@ -261,7 +341,8 @@ const addToCart = (product) => {
 
   if (existingItem) {
     if (existingItem.quantity >= Number(variant.stock)) {
-      cartNotice.value = `Solo hay ${variant.stock} unidades disponibles para esa variante.`
+      const availableText = Number(variant.stock) === 1 ? 'unidad disponible' : 'unidades disponibles'
+      announceCartNotice(`Solo hay ${variant.stock} ${availableText} para esa variante.`)
       return false
     }
     existingItem.quantity += 1
@@ -275,13 +356,16 @@ const addToCart = (product) => {
       color: variant.color,
       stock: Number(variant.stock),
       precio: Number(product.precio) || 0,
-      imagen_url: product.imagen_url || fallbackImage,
+      imagen_url: imageForVariant(product, variant.id_variante),
       quantity: 1,
     })
   }
 
   cartNotice.value = ''
+  cartNoticeType.value = 'info'
   saveCart()
+  flashAddedVariant(variant.id_variante)
+  showCartFeedback(`${product.nombre} · ${formatSize(product.categoria, variant.talle)} · ${variant.color} agregado a la bolsa.`)
   return true
 }
 
@@ -303,13 +387,13 @@ const addDetailToCart = () => {
 
   if (addToCart(selectedProduct.value)) {
     selectedProduct.value = null
-    isCartOpen.value = true
   }
 }
 
 const updateQuantity = (item, change) => {
   if (change > 0 && item.quantity >= item.stock) {
-    cartNotice.value = `Solo hay ${item.stock} unidades disponibles de ${item.nombre} (${formatCartSize(item)}, ${item.color}).`
+    const availableText = item.stock === 1 ? 'unidad disponible' : 'unidades disponibles'
+    announceCartNotice(`Solo hay ${item.stock} ${availableText} de ${item.nombre} (${formatCartSize(item)}, ${item.color}).`)
     return
   }
 
@@ -320,12 +404,14 @@ const updateQuantity = (item, change) => {
   }
 
   cartNotice.value = ''
+  cartNoticeType.value = 'info'
   saveCart()
 }
 
 const removeFromCart = (variantId) => {
   cartItems.value = cartItems.value.filter((item) => item.id_variante !== variantId)
   cartNotice.value = ''
+  cartNoticeType.value = 'info'
   saveCart()
 }
 
@@ -500,12 +586,53 @@ const toggleInventoryProduct = (productId) => {
 }
 
 const openProductForm = () => {
-  showProductForm.value = !showProductForm.value
-  productError.value = ''
-
   if (showProductForm.value) {
-    productSuccess.value = ''
+    closeProductForm()
+    return
   }
+
+  editingProductId.value = null
+  productForm.value = emptyProductForm()
+  clearProductImage()
+  showProductForm.value = true
+  productError.value = ''
+  productSuccess.value = ''
+}
+
+const editProduct = async (product) => {
+  clearProductImage()
+  editingProductId.value = product.id_producto
+  productForm.value = {
+    nombre: product.nombre || '',
+    descripcion: product.descripcion || '',
+    precio: product.precio || '',
+    categoria: product.categoria || '',
+    imagen: product.imagen_url || '',
+    variantes: (product.variantes || []).map((variant) => ({
+      id_variante: variant.id_variante,
+      talle: variant.talle,
+      color: variant.color,
+      stock: Number(variant.stock),
+    })),
+  }
+  showProductForm.value = true
+  productError.value = ''
+  productSuccess.value = ''
+  adminTab.value = 'productos'
+  await nextTick()
+  productEditorForm.value?.scrollIntoView({
+    behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+    block: 'start',
+  })
+  productNameInput.value?.focus({ preventScroll: true })
+}
+
+const closeProductForm = () => {
+  showProductForm.value = false
+  editingProductId.value = null
+  productForm.value = emptyProductForm()
+  clearProductImage()
+  productError.value = ''
 }
 
 const loadAdminOrders = async () => {
@@ -571,6 +698,11 @@ const clearProductImage = () => {
   if (productImageInput.value) productImageInput.value.value = ''
 }
 
+const removeProductImage = () => {
+  clearProductImage()
+  productForm.value.imagen = ''
+}
+
 const handleProductImageSelection = (event) => {
   productError.value = ''
   const file = event.target.files?.[0]
@@ -599,31 +731,44 @@ const submitProduct = async () => {
   productLoading.value = true
   productError.value = ''
   productSuccess.value = ''
+  const isEditing = editingProductId.value !== null
 
   try {
-    await createProduct({
+    const productData = {
       ...productForm.value,
       precio: Number(productForm.value.precio),
       descripcion: productForm.value.descripcion || null,
       imagen: productForm.value.imagen || null,
       imagen_archivo: productImageFile.value,
       variantes: productForm.value.variantes.map((variant) => ({
+        id_variante: variant.id_variante,
         talle: variant.talle,
         color: variant.color,
         stock: Number(variant.stock),
       })),
-    })
+    }
+
+    if (isEditing) {
+      await updateProduct(editingProductId.value, productData)
+    } else {
+      await createProduct(productData)
+    }
 
     productForm.value = emptyProductForm()
+    editingProductId.value = null
     clearProductImage()
-    productSuccess.value = 'Producto creado y añadido al catálogo.'
     showProductForm.value = false
+    productSuccess.value = isEditing
+      ? 'Producto actualizado correctamente.'
+      : 'Producto creado y añadido al catálogo.'
     await loadCatalog()
   } catch (error) {
     const validationErrors = error.response?.data?.errors
     productError.value = validationErrors
       ? Object.values(validationErrors).flat().join(' ')
-      : error.response?.data?.message || 'No se pudo crear el producto.'
+      : error.response?.data?.message || (isEditing
+        ? 'No se pudo actualizar el producto.'
+        : 'No se pudo crear el producto.')
   } finally {
     productLoading.value = false
   }
@@ -671,7 +816,11 @@ onMounted(() => {
   loadCatalog()
 })
 
-onUnmounted(clearProductImage)
+onUnmounted(() => {
+  clearProductImage()
+  if (cartFeedbackTimeout) window.clearTimeout(cartFeedbackTimeout)
+  if (lastAddedTimeout) window.clearTimeout(lastAddedTimeout)
+})
 </script>
 
 <template>
@@ -705,9 +854,9 @@ onUnmounted(clearProductImage)
         </button>
         <button v-if="isAdministrator" class="account-trigger logout-trigger" type="button" @click="logout">Salir</button>
         <button v-else class="account-trigger" type="button" @click="openAuth">Mi cuenta</button>
-        <button class="cart-trigger" type="button" @click="isCartOpen = true" aria-label="Abrir carrito">
+        <button class="cart-trigger" type="button" aria-label="Abrir carrito" :aria-expanded="isCartOpen" @click="isCartOpen = true">
           <span>Tu bolsa</span>
-          <span class="cart-count">{{ cartCount }}</span>
+          <span class="cart-count" :class="{ 'cart-count-bump': cartCount > 0 }">{{ cartCount }}</span>
         </button>
       </div>
     </header>
@@ -836,13 +985,13 @@ onUnmounted(clearProductImage)
         <div v-else-if="adminTab === 'productos'" id="admin-products" class="admin-tab-panel">
           <div class="product-form-toggle">
             <div>
-              <h3>Agregar producto</h3>
-              <p>Registra una prenda nueva con sus variantes e inventario inicial.</p>
+              <h3>{{ editingProductId ? 'Editar producto' : 'Agregar producto' }}</h3>
+              <p>{{ editingProductId ? 'Actualiza los datos, la foto, el precio y sus variantes.' : 'Registra una prenda nueva con sus variantes e inventario inicial.' }}</p>
             </div>
             <button
               class="admin-submit product-toggle-button"
               type="button"
-              aria-controls="product-create-form"
+              aria-controls="product-editor-form"
               :aria-expanded="showProductForm"
               @click="openProductForm"
             >
@@ -850,11 +999,41 @@ onUnmounted(clearProductImage)
             </button>
           </div>
           <p v-if="productSuccess" class="admin-message admin-success" role="status">{{ productSuccess }}</p>
-          <form v-if="showProductForm" id="product-create-form" class="admin-form product-create-form" @submit.prevent="submitProduct">
+          <div class="product-manager">
+            <label class="inventory-search">
+              <span>Buscar producto para editar</span>
+              <input v-model="productManagementSearch" type="search" placeholder="Nombre o categoría" />
+            </label>
+            <div v-if="filteredAdminProducts.length" class="admin-product-list">
+              <article v-for="product in filteredAdminProducts" :key="product.id_producto" class="admin-product-row">
+                <img
+                  :src="adminProductImage(product)"
+                  :alt="`Imagen de ${product.nombre}`"
+                  class="admin-product-image"
+                  @error="handleImageError"
+                />
+                <div class="admin-product-copy">
+                  <strong>{{ product.nombre }}</strong>
+                  <span>{{ product.categoria }} · {{ formatPrice(product.precio) }} · {{ product.variantes?.length || 0 }} variantes</span>
+                </div>
+                <button class="admin-secondary admin-product-edit" type="button" @click="editProduct(product)">
+                  Editar
+                </button>
+              </article>
+            </div>
+            <p v-else class="inventory-help">No encontramos productos con esa búsqueda.</p>
+          </div>
+          <form
+            v-if="showProductForm"
+            id="product-editor-form"
+            ref="productEditorForm"
+            class="admin-form product-create-form"
+            @submit.prevent="submitProduct"
+          >
             <div class="admin-fields">
               <label class="admin-field">
                 <span>Nombre *</span>
-                <input v-model.trim="productForm.nombre" type="text" maxlength="255" required />
+                <input ref="productNameInput" v-model.trim="productForm.nombre" type="text" maxlength="255" required />
               </label>
               <label class="admin-field">
                 <span>Categoría *</span>
@@ -879,9 +1058,9 @@ onUnmounted(clearProductImage)
                   @change="handleProductImageSelection"
                 />
                 <span class="image-upload-hint">JPG, PNG o WebP · máximo 5 MB</span>
-                <div v-if="productImagePreview" class="image-preview-row">
-                  <img :src="productImagePreview" alt="Vista previa de la imagen seleccionada" class="image-preview" />
-                  <button class="admin-secondary" type="button" @click="clearProductImage">Quitar imagen</button>
+                <div v-if="productImagePreview || productForm.imagen" class="image-preview-row">
+                  <img :src="productImagePreview || productForm.imagen" alt="Vista previa de la imagen del producto" class="image-preview" @error="handleImageError" />
+                  <button class="admin-secondary" type="button" @click="removeProductImage">Quitar imagen</button>
                 </div>
                 <input v-model.trim="productForm.imagen" type="url" maxlength="255" placeholder="O pega una URL de imagen" />
               </label>
@@ -894,7 +1073,7 @@ onUnmounted(clearProductImage)
             <div class="admin-variant-heading">
               <div>
                 <h3>Variantes *</h3>
-                <p>Al menos una; máximo 40 por producto.</p>
+                <p>Al menos una; máximo 40. Las variantes incluidas en pedidos anteriores no se pueden quitar ni cambiar de talle o color.</p>
               </div>
               <button class="admin-secondary" type="button" @click="addVariant">Añadir variante</button>
             </div>
@@ -920,10 +1099,10 @@ onUnmounted(clearProductImage)
             <p v-if="productError" class="admin-message admin-error" role="alert">{{ productError }}</p>
             <div class="product-form-actions">
               <button class="admin-submit" type="submit" :disabled="productLoading">
-                {{ productLoading ? 'GUARDANDO...' : 'CREAR PRODUCTO' }}
+                {{ productLoading ? 'GUARDANDO...' : editingProductId ? 'GUARDAR CAMBIOS' : 'CREAR PRODUCTO' }}
               </button>
-              <button class="admin-secondary product-cancel-button" type="button" :disabled="productLoading" @click="showProductForm = false">
-                Cerrar sin guardar
+              <button class="admin-secondary product-cancel-button" type="button" :disabled="productLoading" @click="closeProductForm">
+                Cancelar
               </button>
             </div>
           </form>
@@ -1051,7 +1230,7 @@ onUnmounted(clearProductImage)
           </div>
           <label class="search-field">
             <span class="search-icon" aria-hidden="true">⌕</span>
-            <input v-model="searchQuery" type="search" placeholder="Buscar prendas" aria-label="Buscar prendas" />
+            <input v-model="searchQuery" type="search" placeholder="Nombre, categoría, talle o color" aria-label="Buscar por nombre, categoría, talle o color" />
             <button v-if="searchQuery" class="clear-search" type="button" aria-label="Limpiar búsqueda" @click="searchQuery = ''">×</button>
           </label>
         </div>
@@ -1070,7 +1249,14 @@ onUnmounted(clearProductImage)
           </button>
         </nav>
 
-        <p class="catalog-count">{{ filteredProducts.length }} {{ filteredProducts.length === 1 ? 'prenda' : 'prendas' }} para elegir</p>
+        <p class="catalog-count" aria-live="polite">
+          <template v-if="searchQuery.trim()">
+            {{ filteredProducts.length }} {{ filteredProducts.length === 1 ? 'resultado encontrado' : 'resultados encontrados' }}
+          </template>
+          <template v-else>
+            {{ filteredProducts.length }} {{ filteredProducts.length === 1 ? 'prenda' : 'prendas' }} para elegir
+          </template>
+        </p>
 
         <div v-if="isLoading" class="catalog-message" role="status">
           <span class="loading-mark" aria-hidden="true">✳</span>
@@ -1096,8 +1282,15 @@ onUnmounted(clearProductImage)
                 <span class="product-number">0{{ index + 1 }}</span>
                 <span class="product-view-label">Ver detalles <span aria-hidden="true">↗</span></span>
               </button>
-              <button class="quick-add" type="button" :aria-label="`Agregar ${product.nombre} a la bolsa`" :disabled="!product.variantes?.some((variant) => Number(variant.stock) > 0)" @click.stop="addToCart(product)">
-                <span aria-hidden="true">+</span>
+              <button
+                class="quick-add"
+                :class="{ 'quick-add-added': product.variantes?.some((variant) => variant.id_variante === lastAddedVariantId) }"
+                type="button"
+                :aria-label="product.variantes?.some((variant) => variant.id_variante === lastAddedVariantId) ? `${product.nombre} agregado a la bolsa` : `Agregar ${product.nombre} a la bolsa`"
+                :disabled="!product.variantes?.some((variant) => Number(variant.stock) > 0)"
+                @click.stop="addToCart(product)"
+              >
+                <span aria-hidden="true">{{ product.variantes?.some((variant) => variant.id_variante === lastAddedVariantId) ? '✓' : '+' }}</span>
               </button>
             </div>
             <label v-if="product.variantes?.length" class="variant-picker">
@@ -1190,7 +1383,7 @@ onUnmounted(clearProductImage)
               </label>
               <p v-if="detailVariant && Number(detailVariant.stock) > 0" class="detail-stock">Disponible para agregar al carrito</p>
               <p v-else class="detail-stock detail-out-of-stock">Esta prenda está agotada</p>
-              <p v-if="cartNotice" class="cart-notice" role="status">{{ cartNotice }}</p>
+              <p v-if="cartNotice" class="cart-notice" :class="`cart-notice-${cartNoticeType}`" role="status">{{ cartNotice }}</p>
               <button class="detail-add-button" type="button" :disabled="!detailVariant || Number(detailVariant.stock) < 1" @click="addDetailToCart">
                 Agregar al carrito
               </button>
@@ -1272,7 +1465,7 @@ onUnmounted(clearProductImage)
               <button class="remove-item" type="button" :aria-label="`Eliminar ${item.nombre}`" @click="removeFromCart(item.id_variante)">×</button>
             </article>
           </div>
-          <p v-if="cartNotice" class="cart-notice" role="status">{{ cartNotice }}</p>
+          <p v-if="cartNotice" class="cart-notice" :class="`cart-notice-${cartNoticeType}`" role="status">{{ cartNotice }}</p>
           <div v-if="!cartItems.length" class="empty-cart">
             <span aria-hidden="true">✳</span>
             <p>Tu bolsa está esperando algo bueno.</p>
@@ -1367,5 +1560,25 @@ onUnmounted(clearProductImage)
         </section>
       </div>
     </Transition>
+
+    <Transition name="cart-feedback">
+      <p v-if="cartFeedback && !isCartOpen && !isCheckoutOpen && !selectedProduct" class="cart-feedback-toast" :class="`cart-feedback-${cartFeedbackType}`" role="status" aria-live="polite">
+        <span aria-hidden="true">{{ cartFeedbackType === 'success' ? '✓' : '!' }}</span>
+        {{ cartFeedback }}
+        <button class="cart-feedback-open" type="button" @click="isCartOpen = true">Ver bolsa</button>
+      </p>
+    </Transition>
+
+    <button
+      v-if="cartCount > 0 && !isCartOpen && !isCheckoutOpen"
+      class="floating-cart"
+      type="button"
+      :aria-label="`Abrir bolsa, ${cartCount} ${cartCount === 1 ? 'artículo' : 'artículos'}`"
+      @click="isCartOpen = true"
+    >
+      <span class="floating-cart-icon" aria-hidden="true">▱</span>
+      <span>{{ cartLabel }}</span>
+      <span class="floating-cart-total">{{ formatPrice(cartTotal) }}</span>
+    </button>
   </div>
 </template>
