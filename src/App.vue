@@ -68,6 +68,10 @@ const inventorySearch = ref('')
 const inventoryFilter = ref('todos')
 const expandedInventoryProductIds = ref([])
 const orders = ref([])
+const ordersView = ref('activos')
+const ordersPage = ref(1)
+const ordersPagination = ref({ current_page: 1, last_page: 1, per_page: 10, total: 0 })
+const pendingOrderCount = ref(0)
 const ordersLoading = ref(false)
 const ordersError = ref('')
 const ordersSuccess = ref('')
@@ -157,7 +161,6 @@ const categoryOptions = computed(() => {
   ]
 })
 
-const pendingOrderCount = computed(() => orders.value.filter((order) => order.estado === 'Pendiente').length)
 const filteredInventoryProducts = computed(() => {
   const query = normalizeSearchText(inventorySearch.value.trim())
 
@@ -641,13 +644,34 @@ const loadAdminOrders = async () => {
   ordersSuccess.value = ''
 
   try {
-    orders.value = await getAdminOrders()
+    const response = await getAdminOrders({ view: ordersView.value, page: ordersPage.value })
+    orders.value = response.orders
+    ordersPagination.value = response.pagination
+    pendingOrderCount.value = response.pending_count
+    ordersPage.value = response.pagination.current_page
   } catch (error) {
     orders.value = []
+    ordersPagination.value = { current_page: 1, last_page: 1, per_page: 10, total: 0 }
+    pendingOrderCount.value = 0
     ordersError.value = error.response?.data?.message || 'No se pudieron cargar los pedidos.'
   } finally {
     ordersLoading.value = false
   }
+}
+
+const setOrdersView = (view) => {
+  if (ordersView.value === view || ordersLoading.value) return
+
+  ordersView.value = view
+  ordersPage.value = 1
+  void loadAdminOrders()
+}
+
+const changeOrdersPage = (page) => {
+  if (ordersLoading.value || page < 1 || page > ordersPagination.value.last_page) return
+
+  ordersPage.value = page
+  void loadAdminOrders()
 }
 
 const changeOrderStatus = async (order, status) => {
@@ -657,18 +681,21 @@ const changeOrderStatus = async (order, status) => {
 
   try {
     const response = await updateOrderStatus(order.id_pedido, status)
-    order.estado = response.order.estado
-    ordersSuccess.value = `El pedido #${order.id_pedido} quedó ${order.estado.toLowerCase()}.`
+    const successMessage = `El pedido #${order.id_pedido} quedó ${response.order.estado.toLowerCase()}.`
 
     if (status === 'Confirmado' || status === 'Cancelado') {
       await loadCatalog()
     }
+
+    await loadAdminOrders()
+    if (!ordersError.value) ordersSuccess.value = successMessage
   } catch (error) {
     const validationErrors = error.response?.data?.errors
-    ordersError.value = validationErrors
+    const errorMessage = validationErrors
       ? Object.values(validationErrors).flat().join(' ')
       : error.response?.data?.message || 'No se pudo actualizar el pedido.'
     await loadAdminOrders()
+    ordersError.value = errorMessage
   } finally {
     updatingOrderId.value = null
   }
@@ -905,17 +932,44 @@ onUnmounted(() => {
         <div v-if="adminTab === 'pedidos'" id="admin-orders" class="admin-tab-panel">
           <div class="admin-variant-heading orders-heading">
             <div>
-              <h3>Pedidos recibidos</h3>
-              <p>Confirma la disponibilidad para descontar el stock o cancela pedidos que no puedas atender.</p>
+              <h3>{{ ordersView === 'activos' ? 'Pedidos activos' : 'Historial de pedidos' }}</h3>
+              <p>
+                {{ ordersView === 'activos'
+                  ? 'Confirma la disponibilidad para descontar el stock o cancela pedidos que no puedas atender.'
+                  : 'Pedidos entregados y cancelados se conservan aquí como historial.' }}
+              </p>
             </div>
             <button class="admin-secondary" type="button" :disabled="ordersLoading" @click="loadAdminOrders">
               {{ ordersLoading ? 'CARGANDO...' : 'Actualizar pedidos' }}
             </button>
           </div>
+          <div class="order-view-tabs" role="group" aria-label="Filtrar pedidos por estado">
+            <button
+              type="button"
+              :class="{ active: ordersView === 'activos' }"
+              :aria-pressed="ordersView === 'activos'"
+              :disabled="ordersLoading"
+              @click="setOrdersView('activos')"
+            >
+              Activos
+              <span v-if="pendingOrderCount" class="admin-tab-count">{{ pendingOrderCount }}</span>
+            </button>
+            <button
+              type="button"
+              :class="{ active: ordersView === 'historial' }"
+              :aria-pressed="ordersView === 'historial'"
+              :disabled="ordersLoading"
+              @click="setOrdersView('historial')"
+            >
+              Historial
+            </button>
+          </div>
           <p v-if="ordersError" class="admin-message admin-error" role="alert">{{ ordersError }}</p>
           <p v-if="ordersSuccess" class="admin-message admin-success" role="status">{{ ordersSuccess }}</p>
           <p v-if="ordersLoading && !orders.length" class="admin-message" role="status">Cargando pedidos...</p>
-          <p v-else-if="!ordersLoading && !ordersError && !orders.length" class="admin-message">Todavía no hay pedidos registrados.</p>
+          <p v-else-if="!ordersLoading && !ordersError && !orders.length" class="admin-message">
+            {{ ordersView === 'activos' ? 'No hay pedidos activos.' : 'Todavía no hay pedidos en el historial.' }}
+          </p>
           <div v-if="orders.length" class="orders-list">
             <article v-for="order in orders" :key="order.id_pedido" class="order-card">
               <header class="order-card-heading">
@@ -980,6 +1034,30 @@ onUnmounted(() => {
               </footer>
             </article>
           </div>
+          <nav v-if="ordersPagination.total" class="orders-pagination" aria-label="Paginación de pedidos">
+            <span>
+              Página {{ ordersPagination.current_page }} de {{ ordersPagination.last_page }}
+              · {{ ordersPagination.total }} {{ ordersPagination.total === 1 ? 'pedido' : 'pedidos' }}
+            </span>
+            <div>
+              <button
+                class="admin-secondary"
+                type="button"
+                :disabled="ordersLoading || ordersPagination.current_page <= 1"
+                @click="changeOrdersPage(ordersPagination.current_page - 1)"
+              >
+                Anterior
+              </button>
+              <button
+                class="admin-secondary"
+                type="button"
+                :disabled="ordersLoading || ordersPagination.current_page >= ordersPagination.last_page"
+                @click="changeOrdersPage(ordersPagination.current_page + 1)"
+              >
+                Siguiente
+              </button>
+            </div>
+          </nav>
         </div>
 
         <div v-else-if="adminTab === 'productos'" id="admin-products" class="admin-tab-panel">

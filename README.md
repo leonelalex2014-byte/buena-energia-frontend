@@ -11,7 +11,7 @@ Para estudiar el frontend archivo por archivo, consulta la [guía de estudio](do
 - Diseño adaptable a móvil y escritorio, con estados de carga, error y reintento.
 - Formato de precios en pesos uruguayos.
 - Acceso de administrador con registro protegido por clave.
-- Gestión de productos, imágenes, variantes y stock, además de revisión y actualización de pedidos.
+- Gestión de productos, imágenes, variantes y stock, además de pedidos activos e historial paginado.
 - Pedidos registrados en el backend y enviados a WhatsApp para coordinar la compra.
 
 La bolsa es local hasta que se envía el checkout. El backend registra el pedido y valida existencias y precios; luego el frontend abre WhatsApp con el resumen para coordinar la compra. El costo de envío se confirma con la tienda.

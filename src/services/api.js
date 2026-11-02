@@ -107,8 +107,10 @@ export const createOrder = async (order) => {
   return data
 }
 
-export const getAdminOrders = async () => {
-  const { data } = await api.get('/admin/pedidos')
+export const getAdminOrders = async ({ view = 'activos', page = 1 } = {}) => {
+  const { data } = await api.get('/admin/pedidos', {
+    params: { vista: view, page, per_page: 10 },
+  })
   return data
 }
 

@@ -793,8 +793,10 @@ El módulo exporta funciones pequeñas que corresponden a operaciones de negocio
 - `getCaptchaChallenge()` y `verifyCaptcha()` llaman a endpoints públicos del
   CAPTCHA; `loginAdministrator()`, `registerAdministrator()` y
   `logoutAdministrator()` exponen el flujo de sesión.
-- `createOrder()` envía el JSON del pedido. `getAdminOrders()` y
-  `updateOrderStatus()` leen y cambian estados del panel.
+- `createOrder()` envía el JSON del pedido. `getAdminOrders({ view, page })`
+  pide una página de pedidos activos o del historial; la API devuelve también
+  la paginación y el total de pedidos pendientes. `updateOrderStatus()` cambia
+  estados del panel.
 - `createProduct()` y `updateProduct()` usan `productFormData()` porque una
   imagen se manda como archivo junto con texto. El iterador de variantes
   serializa campos con índices `variantes[n][campo]`; en actualización se
@@ -837,8 +839,9 @@ nombres de clase se acuerdan con el template de `App.vue`.
    acceso persistente a la bolsa; `.checkout-*` y `.delivery-*` dan forma al
    modal y opciones de entrega.
 9. `.product-detail-*` controla el modal de detalle; `.auth-*` el de acceso.
-   `.admin-*`, `.orders-*`, `.inventory-*` y `.product-form-*` se dedican al
-   panel, las tarjetas de pedido, los acordeones de stock y el editor.
+   `.admin-*`, `.order-view-tabs`, `.orders-*`, `.inventory-*` y
+   `.product-form-*` se dedican al panel, las vistas paginadas de pedidos,
+   las tarjetas, los acordeones de stock y el editor.
 10. `@media (min-width: 1500px)`, `(max-width: 900px)` y `(max-width: 620px)`
     ajustan columnas, márgenes y apilado según el ancho disponible. Las
     siguientes reglas móviles adaptan cabecera y ventana de acceso.

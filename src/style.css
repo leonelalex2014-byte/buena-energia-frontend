@@ -2142,11 +2142,67 @@ input:focus-visible {
   margin-top: 30px;
 }
 
+.order-view-tabs {
+  margin-top: 14px;
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.order-view-tabs button {
+  min-height: 38px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.order-view-tabs button.active {
+  border-bottom-color: var(--green);
+  color: var(--green);
+}
+
+.order-view-tabs button:disabled {
+  cursor: wait;
+}
+
 .orders-list {
   margin-top: 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.orders-pagination {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.orders-pagination > div {
+  display: flex;
+  gap: 8px;
+}
+
+.orders-pagination .admin-secondary {
+  min-height: 34px;
+  padding-inline: 12px;
+}
+
+.orders-pagination .admin-secondary:disabled {
+  opacity: .5;
+  cursor: not-allowed;
 }
 
 .order-card {
@@ -2431,6 +2487,19 @@ input:focus-visible {
 
   .orders-heading {
     gap: 12px;
+  }
+
+  .orders-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .orders-pagination > div {
+    width: 100%;
+  }
+
+  .orders-pagination button {
+    flex: 1;
   }
 
   .order-card-footer {
